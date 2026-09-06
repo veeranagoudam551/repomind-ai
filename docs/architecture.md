@@ -121,4 +121,5 @@ models, so the doc and the code stay in sync rather than drifting.
 | Day | Milestone |
 |---|---|
 | Day 1 | Project structure, git repo, env contract, this doc |
+| Day 2 | Next.js frontend scaffold (TypeScript, Tailwind, shadcn/ui, TanStack Query); base layout with nav/footer shell; placeholder landing, login, and dashboard pages |
 

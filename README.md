@@ -52,5 +52,18 @@ what's planned.
 
 ## Getting Started
 
-Setup instructions will be added here once the backend and frontend
-scaffolding exist (see architecture doc for the current phase).
+### Frontend
+
+```bash
+cd frontend
+npm install
+cp .env.local.example .env.local
+npm run dev
+```
+
+Visit `http://localhost:3000`. There is no backend yet (see the
+architecture doc for the current phase), so pages are static
+placeholders.
+
+Backend setup instructions will be added here once the FastAPI
+scaffolding exists.
