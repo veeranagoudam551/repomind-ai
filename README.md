@@ -61,9 +61,21 @@ cp .env.local.example .env.local
 npm run dev
 ```
 
-Visit `http://localhost:3000`. There is no backend yet (see the
-architecture doc for the current phase), so pages are static
-placeholders.
+Visit `http://localhost:3000`. There is no database or auth wired up
+yet (see the architecture doc for the current phase), so pages are
+mostly static placeholders.
 
-Backend setup instructions will be added here once the FastAPI
-scaffolding exists.
+### Backend
+
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate      # Windows; use `source .venv/bin/activate` on macOS/Linux
+pip install -r requirements.txt
+cp .env.example ../.env     # shared with the frontend; copy root .env.example instead if it already exists
+uvicorn app.main:app --reload --port 8000
+```
+
+Visit `http://localhost:8000/health` for the health check or
+`http://localhost:8000/docs` for interactive API docs. There is no
+database yet — see the architecture doc for the current phase.

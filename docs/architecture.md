@@ -122,4 +122,5 @@ models, so the doc and the code stay in sync rather than drifting.
 |---|---|
 | Day 1 | Project structure, git repo, env contract, this doc |
 | Day 2 | Next.js frontend scaffold (TypeScript, Tailwind, shadcn/ui, TanStack Query); base layout with nav/footer shell; placeholder landing, login, and dashboard pages |
+| Day 3 | FastAPI backend skeleton (`app/main.py`, `app/core/config.py` via pydantic-settings, `app/api/health.py`); `/health` endpoint; CORS configured for the frontend origin |
 
