@@ -82,3 +82,6 @@ Visit `http://localhost:8000/health` for the health check or
 running PostgreSQL instance with a database matching `DATABASE_URL`
 (create it yourself, e.g. `createdb repomind_ai`) — there is no
 Docker Compose service for it yet.
+
+Auth endpoints: `POST /auth/register`, `POST /auth/login` (returns a
+JWT), `GET /auth/me` (requires `Authorization: Bearer <token>`).

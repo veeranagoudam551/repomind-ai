@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     cors_origins: str = "http://localhost:3000"
     database_url: str = "postgresql+asyncpg://repomind:changeme@localhost:5432/repomind"
+    jwt_secret_key: str = "changeme-generate-a-long-random-secret"
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 60
 
     @property
     def cors_origin_list(self) -> list[str]:

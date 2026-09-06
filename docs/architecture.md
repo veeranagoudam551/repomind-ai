@@ -184,4 +184,5 @@ Unique constraint on `(repository_id, file_path)`.
 | Day 2 | Next.js frontend scaffold (TypeScript, Tailwind, shadcn/ui, TanStack Query); base layout with nav/footer shell; placeholder landing, login, and dashboard pages |
 | Day 3 | FastAPI backend skeleton (`app/main.py`, `app/core/config.py` via pydantic-settings, `app/api/health.py`); `/health` endpoint; CORS configured for the frontend origin |
 | Day 4 | Async SQLAlchemy 2.0 models for all 6 tables (`app/models/`); async engine/session setup (`app/core/database.py`); Alembic configured for async migrations; initial migration generated and applied against a live local PostgreSQL 17 database |
+| Day 5 | Auth: password hashing (bcrypt) and JWT issuing/verification (`app/core/security.py`); `POST /auth/register`, `POST /auth/login`, `GET /auth/me` (protected via `app/api/deps.py`); full flow verified end-to-end against the live database |
 
