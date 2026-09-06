@@ -72,10 +72,13 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate      # Windows; use `source .venv/bin/activate` on macOS/Linux
 pip install -r requirements.txt
-cp .env.example ../.env     # shared with the frontend; copy root .env.example instead if it already exists
+cp .env.example ../.env     # shared with the frontend; edit DATABASE_URL to point at your local Postgres
+alembic upgrade head        # create the schema (users, repositories, conversations, messages, repository_files, code_chunks)
 uvicorn app.main:app --reload --port 8000
 ```
 
 Visit `http://localhost:8000/health` for the health check or
-`http://localhost:8000/docs` for interactive API docs. There is no
-database yet — see the architecture doc for the current phase.
+`http://localhost:8000/docs` for interactive API docs. Requires a
+running PostgreSQL instance with a database matching `DATABASE_URL`
+(create it yourself, e.g. `createdb repomind_ai`) — there is no
+Docker Compose service for it yet.

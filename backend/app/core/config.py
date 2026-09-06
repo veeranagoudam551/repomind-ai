@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "INFO"
     cors_origins: str = "http://localhost:3000"
+    database_url: str = "postgresql+asyncpg://repomind:changeme@localhost:5432/repomind"
 
     @property
     def cors_origin_list(self) -> list[str]:
