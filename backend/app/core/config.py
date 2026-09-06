@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "changeme-generate-a-long-random-secret"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 60
+    github_token: str = ""
+    max_repo_size_mb: int = 250
+    max_file_size_kb: int = 500
 
     @property
     def cors_origin_list(self) -> list[str]:

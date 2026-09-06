@@ -185,4 +185,5 @@ Unique constraint on `(repository_id, file_path)`.
 | Day 3 | FastAPI backend skeleton (`app/main.py`, `app/core/config.py` via pydantic-settings, `app/api/health.py`); `/health` endpoint; CORS configured for the frontend origin |
 | Day 4 | Async SQLAlchemy 2.0 models for all 6 tables (`app/models/`); async engine/session setup (`app/core/database.py`); Alembic configured for async migrations; initial migration generated and applied against a live local PostgreSQL 17 database |
 | Day 5 | Auth: password hashing (bcrypt) and JWT issuing/verification (`app/core/security.py`); `POST /auth/register`, `POST /auth/login`, `GET /auth/me` (protected via `app/api/deps.py`); full flow verified end-to-end against the live database |
+| Day 6 | GitHub API client (`app/services/github.py`) — parses a repo URL, fetches metadata via the GitHub REST API; `POST /repositories` (validates the repo, enforces `MAX_REPO_SIZE_MB`, rejects private repos and duplicates, creates a `pending` row) and `GET /repositories` (list your own), both protected; verified against real public GitHub repos |
 

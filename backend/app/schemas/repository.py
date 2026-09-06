@@ -1,0 +1,27 @@
+from datetime import datetime
+from typing import Optional
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.models.repository import RepositoryStatus
+
+
+class RepositoryCreate(BaseModel):
+    github_url: str = Field(min_length=1, max_length=2048)
+
+
+class RepositoryRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    github_url: str
+    name: str
+    description: Optional[str]
+    default_branch: Optional[str]
+    status: RepositoryStatus
+    error_message: Optional[str]
+    file_count: int
+    total_size_bytes: int
+    created_at: datetime
+    updated_at: datetime
