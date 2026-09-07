@@ -66,7 +66,9 @@ below) at the URL in `NEXT_PUBLIC_API_BASE_URL`. Register an account
 at `/register`, then `/login` — `/dashboard` is real from here on:
 it lists your repositories from the live API, lets you add one by
 GitHub URL, and shows its ingestion status as it moves through
-`pending → cloning → processing → completed`.
+`pending → cloning → processing → completed`. Click a repository to
+see its full detail page (`/dashboard/[id]`) — status, any failure
+message, and every scanned file — with buttons to reindex or delete.
 
 ### Backend
 

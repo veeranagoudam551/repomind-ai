@@ -74,6 +74,15 @@ export type Repository = {
   updated_at: string;
 };
 
+export type RepositoryFile = {
+  id: string;
+  file_path: string;
+  language: string | null;
+  size_bytes: number;
+  content_hash: string | null;
+  created_at: string;
+};
+
 export type AuthToken = {
   access_token: string;
   token_type: string;
@@ -116,6 +125,21 @@ export function createRepository(token: string, githubUrl: string): Promise<Repo
 export function deleteRepository(token: string, id: string): Promise<void> {
   return request<void>(`/repositories/${id}`, {
     method: "DELETE",
+    headers: authHeaders(token),
+  });
+}
+
+export function getRepository(token: string, id: string): Promise<Repository> {
+  return request<Repository>(`/repositories/${id}`, { headers: authHeaders(token) });
+}
+
+export function listRepositoryFiles(token: string, id: string): Promise<RepositoryFile[]> {
+  return request<RepositoryFile[]>(`/repositories/${id}/files`, { headers: authHeaders(token) });
+}
+
+export function reindexRepository(token: string, id: string): Promise<Repository> {
+  return request<Repository>(`/repositories/${id}/reindex`, {
+    method: "POST",
     headers: authHeaders(token),
   });
 }

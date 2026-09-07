@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { FolderGit, Trash2 } from "lucide-react";
 import { AddRepositoryForm } from "@/components/add-repository-form";
@@ -75,10 +76,13 @@ export default async function DashboardPage() {
             <Card key={repo.id}>
               <CardHeader>
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-2">
+                  <Link
+                    href={`/dashboard/${repo.id}`}
+                    className="flex min-w-0 items-center gap-2 hover:underline"
+                  >
                     <FolderGit className="size-4 shrink-0 text-muted-foreground" />
                     <CardTitle className="truncate text-base">{repo.name}</CardTitle>
-                  </div>
+                  </Link>
                   <form action={removeRepository.bind(null, repo.id)}>
                     <Button type="submit" variant="ghost" size="icon-sm" aria-label="Delete repository">
                       <Trash2 />

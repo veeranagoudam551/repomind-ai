@@ -1,7 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { ApiError, createRepository, deleteRepository } from "@/lib/api";
+import { redirect } from "next/navigation";
+import { ApiError, createRepository, deleteRepository, reindexRepository } from "@/lib/api";
 import { getSessionToken } from "@/lib/session";
 
 export type RepositoryFormState = { error: string; successAt?: undefined } | { successAt: number; error?: undefined } | undefined;
@@ -35,5 +36,31 @@ export async function removeRepository(id: string): Promise<void> {
   if (!token) return;
 
   await deleteRepository(token, id);
+  revalidatePath("/dashboard");
+}
+
+export async function deleteRepositoryAndRedirect(id: string): Promise<void> {
+  const token = await getSessionToken();
+  if (!token) {
+    redirect("/login");
+  }
+
+  await deleteRepository(token, id);
+  revalidatePath("/dashboard");
+  redirect("/dashboard");
+}
+
+export async function reindexRepositoryAction(id: string): Promise<void> {
+  const token = await getSessionToken();
+  if (!token) return;
+
+  try {
+    await reindexRepository(token, id);
+  } catch {
+    // e.g. a 409 if ingestion was already in progress — the revalidate
+    // below refreshes the page to reflect whatever the true state is.
+  }
+
+  revalidatePath(`/dashboard/${id}`);
   revalidatePath("/dashboard");
 }
