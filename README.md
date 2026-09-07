@@ -101,3 +101,18 @@ After creation, a repository moves through
 `pending → cloning → processing → completed` (or `failed`, see
 `error_message`) as it's downloaded and its files are scanned; poll
 `GET /repositories/{id}` to watch progress.
+
+### Running tests
+
+```bash
+cd backend
+.venv\Scripts\activate
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests run against a real Postgres database (`<your DATABASE_URL's
+db>_test`), created automatically on first run; each test gets a
+freshly recreated schema. GitHub API calls and background ingestion
+are stubbed out, so the suite needs no network access and never
+touches your dev database.
