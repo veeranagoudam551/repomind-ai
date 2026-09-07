@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from uuid import UUID
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -6,8 +8,9 @@ from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.repository import Repository, RepositoryStatus
+from app.models.repository_file import RepositoryFile
 from app.models.user import User
-from app.schemas.repository import RepositoryCreate, RepositoryRead
+from app.schemas.repository import RepositoryCreate, RepositoryFileRead, RepositoryRead
 from app.services.github import (
     GitHubAPIError,
     GitHubRepoNotFound,
@@ -15,6 +18,7 @@ from app.services.github import (
     fetch_repository,
     parse_github_url,
 )
+from app.services.repository_ingestion import ingest_repository
 
 router = APIRouter(prefix="/repositories", tags=["repositories"])
 
@@ -22,6 +26,7 @@ router = APIRouter(prefix="/repositories", tags=["repositories"])
 @router.post("", response_model=RepositoryRead, status_code=status.HTTP_201_CREATED)
 async def create_repository(
     payload: RepositoryCreate,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -77,6 +82,9 @@ async def create_repository(
     db.add(repository)
     await db.commit()
     await db.refresh(repository)
+
+    background_tasks.add_task(ingest_repository, repository.id)
+
     return repository
 
 
@@ -89,5 +97,42 @@ async def list_repositories(
         select(Repository)
         .where(Repository.owner_id == current_user.id)
         .order_by(Repository.created_at.desc())
+    )
+    return result.all()
+
+
+async def _get_owned_repository(
+    repository_id: UUID, db: AsyncSession, current_user: User
+) -> Repository:
+    repository = await db.scalar(
+        select(Repository).where(
+            Repository.id == repository_id, Repository.owner_id == current_user.id
+        )
+    )
+    if repository is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
+    return repository
+
+
+@router.get("/{repository_id}", response_model=RepositoryRead)
+async def get_repository(
+    repository_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return await _get_owned_repository(repository_id, db, current_user)
+
+
+@router.get("/{repository_id}/files", response_model=list[RepositoryFileRead])
+async def list_repository_files(
+    repository_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repository(repository_id, db, current_user)
+    result = await db.scalars(
+        select(RepositoryFile)
+        .where(RepositoryFile.repository_id == repository_id)
+        .order_by(RepositoryFile.file_path)
     )
     return result.all()

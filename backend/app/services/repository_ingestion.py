@@ -1,0 +1,239 @@
+"""Repository download and file-scanning pipeline (architecture.md Phase 2).
+
+Downloads a repository's default branch as a tarball from GitHub, extracts
+it to a temp directory, scans the resulting file tree, and persists
+per-file metadata to `repository_files`. Runs as a FastAPI background task
+today; will move to a Celery worker once Redis is introduced (Day 34).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import shutil
+import tarfile
+import tempfile
+import uuid
+from datetime import datetime, timezone
+
+import httpx
+from sqlalchemy import delete
+
+from app.core.config import settings
+from app.core.database import AsyncSessionLocal
+from app.models.repository import Repository, RepositoryStatus
+from app.models.repository_file import RepositoryFile
+from app.services.github import GITHUB_API_BASE, parse_github_url
+
+logger = logging.getLogger(__name__)
+
+# Directories that are never useful for code intelligence and are always
+# skipped, regardless of depth.
+EXCLUDED_DIR_NAMES = {
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    ".venv",
+    "venv",
+    "env",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    "target",
+    "vendor",
+    ".idea",
+    ".vscode",
+    "coverage",
+    ".turbo",
+    ".cache",
+    "egg-info",
+}
+
+LANGUAGE_BY_EXTENSION = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".scala": "scala",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".hpp": "cpp",
+    ".cs": "csharp",
+    ".rb": "ruby",
+    ".php": "php",
+    ".swift": "swift",
+    ".sh": "shell",
+    ".bash": "shell",
+    ".sql": "sql",
+    ".html": "html",
+    ".css": "css",
+    ".scss": "scss",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".md": "markdown",
+    ".dockerfile": "dockerfile",
+}
+
+
+class RepositoryIngestionError(Exception):
+    pass
+
+
+def _detect_language(file_path: str) -> str | None:
+    name = os.path.basename(file_path)
+    if name.lower() == "dockerfile":
+        return "dockerfile"
+    _, ext = os.path.splitext(name)
+    return LANGUAGE_BY_EXTENSION.get(ext.lower())
+
+
+async def _download_tarball(owner: str, repo: str, ref: str) -> bytes:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "RepoMind-AI",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if settings.github_token:
+        headers["Authorization"] = f"Bearer {settings.github_token}"
+
+    url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/tarball/{ref}"
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        response = await client.get(url, headers=headers)
+
+    if response.status_code != 200:
+        raise RepositoryIngestionError(
+            f"Failed to download tarball for '{owner}/{repo}@{ref}': "
+            f"GitHub returned {response.status_code}"
+        )
+    return response.content
+
+
+def _safe_extract(tar: tarfile.TarFile, dest_dir: str) -> None:
+    dest_root = os.path.realpath(dest_dir)
+    for member in tar.getmembers():
+        if not (member.isfile() or member.isdir() or member.issym()):
+            continue
+        member_path = os.path.realpath(os.path.join(dest_dir, member.name))
+        if not (member_path == dest_root or member_path.startswith(dest_root + os.sep)):
+            raise RepositoryIngestionError(f"Unsafe path in archive: {member.name}")
+    tar.extractall(dest_dir)
+
+
+def _extract_tarball(data: bytes, dest_dir: str) -> str:
+    tmp_tar_path = os.path.join(dest_dir, "_archive.tar.gz")
+    with open(tmp_tar_path, "wb") as fh:
+        fh.write(data)
+
+    extract_dir = os.path.join(dest_dir, "extracted")
+    os.makedirs(extract_dir, exist_ok=True)
+    with tarfile.open(tmp_tar_path, mode="r:gz") as tar:
+        _safe_extract(tar, extract_dir)
+    os.remove(tmp_tar_path)
+
+    entries = os.listdir(extract_dir)
+    if len(entries) != 1:
+        raise RepositoryIngestionError(
+            "Unexpected tarball layout: expected a single top-level directory"
+        )
+    return os.path.join(extract_dir, entries[0])
+
+
+def _scan_files(root_dir: str) -> list[dict]:
+    max_file_size_bytes = settings.max_file_size_kb * 1024
+    results: list[dict] = []
+
+    for current_dir, dirnames, filenames in os.walk(root_dir):
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIR_NAMES]
+
+        for filename in filenames:
+            abs_path = os.path.join(current_dir, filename)
+            try:
+                size_bytes = os.path.getsize(abs_path)
+            except OSError:
+                continue
+            if size_bytes > max_file_size_bytes:
+                continue
+
+            rel_path = os.path.relpath(abs_path, root_dir).replace(os.sep, "/")
+
+            hasher = hashlib.sha256()
+            try:
+                with open(abs_path, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(65536), b""):
+                        hasher.update(chunk)
+            except OSError:
+                continue
+
+            results.append(
+                {
+                    "file_path": rel_path,
+                    "language": _detect_language(rel_path),
+                    "size_bytes": size_bytes,
+                    "content_hash": hasher.hexdigest(),
+                }
+            )
+
+    return results
+
+
+async def ingest_repository(repository_id: uuid.UUID) -> None:
+    async with AsyncSessionLocal() as db:
+        repository = await db.get(Repository, repository_id)
+        if repository is None:
+            logger.warning("ingest_repository: repository %s not found", repository_id)
+            return
+
+        temp_dir = tempfile.mkdtemp(prefix="repomind-")
+        try:
+            owner, repo = parse_github_url(repository.github_url)
+            ref = repository.default_branch or "HEAD"
+
+            repository.status = RepositoryStatus.CLONING
+            await db.commit()
+
+            tarball = await _download_tarball(owner, repo, ref)
+            extracted_root = _extract_tarball(tarball, temp_dir)
+
+            repository.status = RepositoryStatus.PROCESSING
+            await db.commit()
+
+            scanned_files = _scan_files(extracted_root)
+
+            await db.execute(delete(RepositoryFile).where(RepositoryFile.repository_id == repository.id))
+
+            for file_data in scanned_files:
+                db.add(RepositoryFile(repository_id=repository.id, **file_data))
+
+            repository.file_count = len(scanned_files)
+            repository.total_size_bytes = sum(f["size_bytes"] for f in scanned_files)
+            repository.last_indexed_at = datetime.now(timezone.utc)
+            repository.status = RepositoryStatus.COMPLETED
+            repository.error_message = None
+            await db.commit()
+        except Exception as exc:
+            logger.exception("ingest_repository failed for %s", repository_id)
+            await db.rollback()
+            repository = await db.get(Repository, repository_id)
+            if repository is not None:
+                repository.status = RepositoryStatus.FAILED
+                repository.error_message = str(exc)[:2000]
+                await db.commit()
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)

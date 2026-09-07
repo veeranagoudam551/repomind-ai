@@ -25,3 +25,14 @@ class RepositoryRead(BaseModel):
     total_size_bytes: int
     created_at: datetime
     updated_at: datetime
+
+
+class RepositoryFileRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    file_path: str
+    language: Optional[str]
+    size_bytes: int
+    content_hash: Optional[str]
+    created_at: datetime

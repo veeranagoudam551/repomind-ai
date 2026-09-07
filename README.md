@@ -88,6 +88,14 @@ JWT), `GET /auth/me` (requires `Authorization: Bearer <token>`).
 
 Repository endpoints (require `Authorization: Bearer <token>`):
 `POST /repositories` (body: `{"github_url": "owner/repo"}`, validates
-the repo via the GitHub API and creates a `pending` row) and
-`GET /repositories` (lists your own repositories). Set `GITHUB_TOKEN`
-in `.env` to raise GitHub's rate limit from 60 to 5000 requests/hour.
+the repo via the GitHub API, creates a `pending` row, and kicks off
+background ingestion), `GET /repositories` (lists your own
+repositories), `GET /repositories/{id}` (single repository, with live
+`status`), and `GET /repositories/{id}/files` (scanned file metadata
+once ingestion completes). Set `GITHUB_TOKEN` in `.env` to raise
+GitHub's rate limit from 60 to 5000 requests/hour.
+
+After creation, a repository moves through
+`pending → cloning → processing → completed` (or `failed`, see
+`error_message`) as it's downloaded and its files are scanned; poll
+`GET /repositories/{id}` to watch progress.
