@@ -2,7 +2,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -123,6 +123,58 @@ async def get_repository(
     current_user: User = Depends(get_current_user),
 ):
     return await _get_owned_repository(repository_id, db, current_user)
+
+
+@router.delete("/{repository_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_repository(
+    repository_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    repository = await _get_owned_repository(repository_id, db, current_user)
+    await db.delete(repository)
+    await db.commit()
+
+
+IN_PROGRESS_STATUSES = (
+    RepositoryStatus.PENDING,
+    RepositoryStatus.CLONING,
+    RepositoryStatus.PROCESSING,
+)
+
+
+@router.post("/{repository_id}/reindex", response_model=RepositoryRead)
+async def reindex_repository(
+    repository_id: UUID,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Atomically claim the job: only succeeds if no ingestion is already
+    # in flight, so two concurrent reindex calls can't both start one.
+    result = await db.execute(
+        update(Repository)
+        .where(
+            Repository.id == repository_id,
+            Repository.owner_id == current_user.id,
+            Repository.status.notin_(IN_PROGRESS_STATUSES),
+        )
+        .values(status=RepositoryStatus.PENDING, error_message=None)
+        .returning(Repository.id)
+    )
+    updated_id = result.scalar_one_or_none()
+    await db.commit()
+
+    if updated_id is None:
+        await _get_owned_repository(repository_id, db, current_user)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Repository ingestion is already in progress",
+        )
+
+    repository = await db.get(Repository, updated_id)
+    background_tasks.add_task(ingest_repository, repository.id)
+    return repository
 
 
 @router.get("/{repository_id}/files", response_model=list[RepositoryFileRead])
