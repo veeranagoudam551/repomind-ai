@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { QueryProvider } from "@/lib/query-provider";
+import { getSessionToken } from "@/lib/session";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -21,7 +22,9 @@ export const metadata: Metadata = {
     "AI-powered codebase intelligence — explore, understand, debug, and analyze a GitHub repository grounded in its real source code.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  const token = await getSessionToken();
+
   return (
     <html
       lang="en"
@@ -29,7 +32,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full flex flex-col">
         <QueryProvider>
-          <SiteHeader />
+          <SiteHeader isAuthenticated={Boolean(token)} />
           <div className="flex flex-1 flex-col">{children}</div>
           <SiteFooter />
         </QueryProvider>

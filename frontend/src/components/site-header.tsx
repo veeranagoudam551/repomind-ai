@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { Bot } from "lucide-react";
+import { logout } from "@/app/actions/auth";
 import { Button } from "@/components/ui/button";
 
 const NAV_LINKS = [
   { href: "/dashboard", label: "Dashboard" },
 ] as const;
 
-export function SiteHeader() {
+export function SiteHeader({ isAuthenticated }: { isAuthenticated: boolean }) {
   return (
     <header className="sticky top-0 z-50 w-full border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
@@ -28,12 +29,22 @@ export function SiteHeader() {
         </nav>
 
         <div className="flex items-center gap-2">
-          <Button asChild variant="ghost" size="sm">
-            <Link href="/login">Log in</Link>
-          </Button>
-          <Button asChild size="sm">
-            <Link href="/login">Get started</Link>
-          </Button>
+          {isAuthenticated ? (
+            <form action={logout}>
+              <Button type="submit" variant="ghost" size="sm">
+                Log out
+              </Button>
+            </form>
+          ) : (
+            <>
+              <Button asChild variant="ghost" size="sm">
+                <Link href="/login">Log in</Link>
+              </Button>
+              <Button asChild size="sm">
+                <Link href="/register">Get started</Link>
+              </Button>
+            </>
+          )}
         </div>
       </div>
     </header>
