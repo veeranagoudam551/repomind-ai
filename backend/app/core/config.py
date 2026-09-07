@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     github_token: str = ""
     max_repo_size_mb: int = 250
     max_file_size_kb: int = 500
+    chunk_max_lines: int = 100
+    chunk_overlap_lines: int = 15
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -36,3 +36,16 @@ class RepositoryFileRead(BaseModel):
     size_bytes: int
     content_hash: Optional[str]
     created_at: datetime
+
+
+class CodeChunkRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    repository_file_id: UUID
+    chunk_index: int
+    content: str
+    start_line: Optional[int]
+    end_line: Optional[int]
+    vector_id: Optional[str]
+    created_at: datetime

@@ -91,9 +91,11 @@ Repository endpoints (require `Authorization: Bearer <token>`):
 the repo via the GitHub API, creates a `pending` row, and kicks off
 background ingestion), `GET /repositories` (lists your own
 repositories), `GET /repositories/{id}` (single repository, with live
-`status`), and `GET /repositories/{id}/files` (scanned file metadata
-once ingestion completes). Set `GITHUB_TOKEN` in `.env` to raise
-GitHub's rate limit from 60 to 5000 requests/hour.
+`status`), `GET /repositories/{id}/files` (scanned file metadata once
+ingestion completes), and `GET /repositories/{id}/chunks` (optional
+`?file_id=` filter; the line-window chunks generated from each file's
+content, ready for embedding once Qdrant lands). Set `GITHUB_TOKEN` in
+`.env` to raise GitHub's rate limit from 60 to 5000 requests/hour.
 
 After creation, a repository moves through
 `pending → cloning → processing → completed` (or `failed`, see

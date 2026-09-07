@@ -1,9 +1,11 @@
-"""Repository download and file-scanning pipeline (architecture.md Phase 2).
+"""Repository download, file-scanning, and chunking pipeline (architecture.md Phase 2).
 
 Downloads a repository's default branch as a tarball from GitHub, extracts
-it to a temp directory, scans the resulting file tree, and persists
-per-file metadata to `repository_files`. Runs as a FastAPI background task
-today; will move to a Celery worker once Redis is introduced (Day 34).
+it to a temp directory, scans the resulting file tree, persists per-file
+metadata to `repository_files`, and splits each text file's content into
+`code_chunks` ahead of embedding generation (Day 14). Runs as a FastAPI
+background task today; will move to a Celery worker once Redis is
+introduced (Day 34).
 """
 
 from __future__ import annotations
@@ -22,8 +24,10 @@ from sqlalchemy import delete
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.models.code_chunk import CodeChunk
 from app.models.repository import Repository, RepositoryStatus
 from app.models.repository_file import RepositoryFile
+from app.services.code_chunking import chunk_file
 from app.services.github import GITHUB_API_BASE, parse_github_url
 
 logger = logging.getLogger(__name__)
@@ -183,6 +187,7 @@ def _scan_files(root_dir: str) -> list[dict]:
 
             results.append(
                 {
+                    "abs_path": abs_path,
                     "file_path": rel_path,
                     "language": _detect_language(rel_path),
                     "size_bytes": size_bytes,
@@ -218,8 +223,35 @@ async def ingest_repository(repository_id: uuid.UUID) -> None:
 
             await db.execute(delete(RepositoryFile).where(RepositoryFile.repository_id == repository.id))
 
+            chunk_total = 0
             for file_data in scanned_files:
-                db.add(RepositoryFile(repository_id=repository.id, **file_data))
+                abs_path = file_data.pop("abs_path")
+
+                repository_file = RepositoryFile(repository_id=repository.id, **file_data)
+                db.add(repository_file)
+                await db.flush()
+
+                try:
+                    with open(abs_path, "rb") as fh:
+                        raw = fh.read()
+                except OSError:
+                    continue
+
+                chunks = chunk_file(
+                    file_data["file_path"],
+                    raw,
+                    max_lines=settings.chunk_max_lines,
+                    overlap_lines=settings.chunk_overlap_lines,
+                )
+                for chunk_data in chunks:
+                    db.add(
+                        CodeChunk(
+                            repository_id=repository.id,
+                            repository_file_id=repository_file.id,
+                            **chunk_data,
+                        )
+                    )
+                chunk_total += len(chunks)
 
             repository.file_count = len(scanned_files)
             repository.total_size_bytes = sum(f["size_bytes"] for f in scanned_files)
@@ -227,6 +259,10 @@ async def ingest_repository(repository_id: uuid.UUID) -> None:
             repository.status = RepositoryStatus.COMPLETED
             repository.error_message = None
             await db.commit()
+            logger.info(
+                "ingest_repository: %s scanned %d files, %d chunks",
+                repository_id, len(scanned_files), chunk_total,
+            )
         except Exception as exc:
             logger.exception("ingest_repository failed for %s", repository_id)
             await db.rollback()

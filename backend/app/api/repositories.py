@@ -1,3 +1,4 @@
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
@@ -7,10 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
+from app.models.code_chunk import CodeChunk
 from app.models.repository import Repository, RepositoryStatus
 from app.models.repository_file import RepositoryFile
 from app.models.user import User
-from app.schemas.repository import RepositoryCreate, RepositoryFileRead, RepositoryRead
+from app.schemas.repository import CodeChunkRead, RepositoryCreate, RepositoryFileRead, RepositoryRead
 from app.services.github import (
     GitHubAPIError,
     GitHubRepoNotFound,
@@ -135,4 +137,19 @@ async def list_repository_files(
         .where(RepositoryFile.repository_id == repository_id)
         .order_by(RepositoryFile.file_path)
     )
+    return result.all()
+
+
+@router.get("/{repository_id}/chunks", response_model=list[CodeChunkRead])
+async def list_repository_chunks(
+    repository_id: UUID,
+    file_id: Optional[UUID] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repository(repository_id, db, current_user)
+    query = select(CodeChunk).where(CodeChunk.repository_id == repository_id)
+    if file_id is not None:
+        query = query.where(CodeChunk.repository_file_id == file_id)
+    result = await db.scalars(query.order_by(CodeChunk.repository_file_id, CodeChunk.chunk_index))
     return result.all()
