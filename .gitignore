@@ -36,6 +36,14 @@ yarn-debug.log*
 yarn-error.log*
 
 # ==============================
+# Playwright (frontend/tests-e2e)
+# ==============================
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/playwright/.cache/
+
+# ==============================
 # Docker / local data volumes
 # ==============================
 docker/volumes/

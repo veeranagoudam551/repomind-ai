@@ -70,6 +70,22 @@ GitHub URL, and shows its ingestion status as it moves through
 see its full detail page (`/dashboard/[id]`) — status, any failure
 message, and every scanned file — with buttons to reindex or delete.
 
+#### End-to-end tests
+
+```bash
+cd frontend
+npx playwright install chromium   # first time only
+npm run test:e2e
+```
+
+Drives a real Chromium browser through register/login/logout and the
+full add-repository → wait for ingestion → view files → reindex →
+delete flow. Starts the Next.js dev server itself and starts/reuses
+the FastAPI backend automatically (needs a local Postgres reachable
+via the backend's `DATABASE_URL`, same as running the backend
+manually), and deletes the `e2e_`-prefixed test users it creates from
+the dev database when the run finishes.
+
 ### Backend
 
 ```bash
