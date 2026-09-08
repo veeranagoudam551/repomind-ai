@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     max_file_size_kb: int = 500
     chunk_max_lines: int = 100
     chunk_overlap_lines: int = 15
+    openai_api_key: str = ""
+    embedding_model: str = "text-embedding-3-small"
 
     @property
     def cors_origin_list(self) -> list[str]:
