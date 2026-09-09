@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ArrowLeft, MessageSquare, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, MessageSquare, RefreshCw, SearchIcon, Trash2 } from "lucide-react";
 import { deleteRepositoryAndRedirect, reindexRepositoryAction } from "@/app/actions/repositories";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -132,6 +132,19 @@ export default async function RepositoryDetailPage(props: PageProps<"/dashboard/
               <Button size="sm" disabled>
                 <MessageSquare />
                 Chat
+              </Button>
+            )}
+            {repository.status === "completed" ? (
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/dashboard/${repository.id}/search`}>
+                  <SearchIcon />
+                  Search
+                </Link>
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" disabled>
+                <SearchIcon />
+                Search
               </Button>
             )}
             <form action={reindexRepositoryAction.bind(null, repository.id)}>

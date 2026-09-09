@@ -144,6 +144,28 @@ export function reindexRepository(token: string, id: string): Promise<Repository
   });
 }
 
+export type SearchResult = {
+  code_chunk_id: string;
+  file_path: string;
+  content: string;
+  start_line: number | null;
+  end_line: number | null;
+  score: number;
+};
+
+export function searchRepository(
+  token: string,
+  id: string,
+  query: string,
+  limit = 10
+): Promise<SearchResult[]> {
+  return request<SearchResult[]>(`/repositories/${id}/search`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ query, limit }),
+  });
+}
+
 export type Conversation = {
   id: string;
   repository_id: string;

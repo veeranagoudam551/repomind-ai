@@ -73,7 +73,11 @@ Once a repository is `completed`, its **Chat** button opens
 `/dashboard/[id]/chat`, where "New chat" starts a conversation
 (`/dashboard/[id]/chat/[conversationId]`) — ask a question and it's
 answered grounded in that repository's indexed code, with the source
-files shown under each reply.
+files shown under each reply. Its **Search** button opens
+`/dashboard/[id]/search` for semantic code search without an LLM
+round-trip — type a query and get back the closest matching code
+chunks directly, ranked by similarity; the query lives in the URL
+(`?q=...`), so results are a plain, shareable, bookmarkable link.
 
 #### End-to-end tests
 
