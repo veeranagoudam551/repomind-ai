@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     chunk_overlap_lines: int = 15
     openai_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
+    qdrant_host: str = "localhost"
+    qdrant_port: int = 6333
+    qdrant_collection_name: str = "repomind_code_chunks"
 
     @property
     def cors_origin_list(self) -> list[str]:

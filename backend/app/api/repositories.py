@@ -13,6 +13,7 @@ from app.models.repository import Repository, RepositoryStatus
 from app.models.repository_file import RepositoryFile
 from app.models.user import User
 from app.schemas.repository import CodeChunkRead, RepositoryCreate, RepositoryFileRead, RepositoryRead
+from app.services import vector_store
 from app.services.github import (
     GitHubAPIError,
     GitHubRepoNotFound,
@@ -132,6 +133,10 @@ async def delete_repository(
     current_user: User = Depends(get_current_user),
 ):
     repository = await _get_owned_repository(repository_id, db, current_user)
+    # Delete Qdrant vectors before the Postgres row: if this fails, the
+    # repository stays around (and deletable again) rather than leaving
+    # orphaned vectors with no code_chunks row left to point at them.
+    await vector_store.delete_by_repository(repository.id)
     await db.delete(repository)
     await db.commit()
 

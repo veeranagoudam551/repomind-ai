@@ -193,6 +193,27 @@ async def test_delete_repository_removes_it_and_cascades(client, db_session, mon
     assert remaining_chunks == []
 
 
+async def test_delete_repository_cleans_up_vector_store(client, monkeypatch):
+    headers = await register_and_login(client, "vectorcleanup@example.com")
+    _mock_fetch(monkeypatch, result=make_repo_info())
+
+    created = await client.post(
+        "/repositories", json={"github_url": "octocat/Hello-World"}, headers=headers
+    )
+    repo_id = uuid.UUID(created.json()["id"])
+
+    calls = []
+
+    async def _spy(repository_id):
+        calls.append(repository_id)
+
+    monkeypatch.setattr("app.services.vector_store.delete_by_repository", _spy)
+
+    response = await client.delete(f"/repositories/{repo_id}", headers=headers)
+    assert response.status_code == 204
+    assert calls == [repo_id]
+
+
 async def test_delete_repository_not_found_for_other_user(client, monkeypatch):
     headers_a = await register_and_login(client, "deleterowner@example.com")
     headers_b = await register_and_login(client, "deleterintruder@example.com")

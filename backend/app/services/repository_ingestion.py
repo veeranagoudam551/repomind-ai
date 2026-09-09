@@ -1,9 +1,12 @@
-"""Repository download, file-scanning, and chunking pipeline (architecture.md Phase 2).
+"""Repository download, file-scanning, chunking, and embedding pipeline
+(architecture.md Phase 2).
 
 Downloads a repository's default branch as a tarball from GitHub, extracts
 it to a temp directory, scans the resulting file tree, persists per-file
-metadata to `repository_files`, and splits each text file's content into
-`code_chunks` ahead of embedding generation (Day 14). Runs as a FastAPI
+metadata to `repository_files`, splits each text file's content into
+`code_chunks`, embeds every chunk (Day 14's `generate_embeddings`), and
+upserts the vectors into Qdrant (Day 15's `vector_store`) - setting each
+`code_chunks.vector_id` once its vector is stored. Runs as a FastAPI
 background task today; will move to a Celery worker once Redis is
 introduced (Day 34).
 """
@@ -27,7 +30,9 @@ from app.core.database import AsyncSessionLocal
 from app.models.code_chunk import CodeChunk
 from app.models.repository import Repository, RepositoryStatus
 from app.models.repository_file import RepositoryFile
+from app.services import vector_store
 from app.services.code_chunking import chunk_file
+from app.services.embeddings import generate_embeddings
 from app.services.github import GITHUB_API_BASE, parse_github_url
 
 logger = logging.getLogger(__name__)
@@ -222,7 +227,13 @@ async def ingest_repository(repository_id: uuid.UUID) -> None:
             scanned_files = _scan_files(extracted_root)
 
             await db.execute(delete(RepositoryFile).where(RepositoryFile.repository_id == repository.id))
+            # Clears any vectors left over from a previous run of this
+            # repository (reindex) before new ones are upserted below - the
+            # chunks recreated on each run get fresh UUIDs, so stale points
+            # from an earlier run would otherwise never be cleaned up.
+            await vector_store.delete_by_repository(repository.id)
 
+            pending_chunks: list[CodeChunk] = []
             chunk_total = 0
             for file_data in scanned_files:
                 abs_path = file_data.pop("abs_path")
@@ -244,14 +255,35 @@ async def ingest_repository(repository_id: uuid.UUID) -> None:
                     overlap_lines=settings.chunk_overlap_lines,
                 )
                 for chunk_data in chunks:
-                    db.add(
-                        CodeChunk(
-                            repository_id=repository.id,
-                            repository_file_id=repository_file.id,
-                            **chunk_data,
-                        )
+                    chunk = CodeChunk(
+                        id=uuid.uuid4(),
+                        repository_id=repository.id,
+                        repository_file_id=repository_file.id,
+                        **chunk_data,
                     )
+                    db.add(chunk)
+                    pending_chunks.append(chunk)
                 chunk_total += len(chunks)
+
+            if pending_chunks:
+                vectors = await generate_embeddings([chunk.content for chunk in pending_chunks])
+                points = [
+                    {
+                        "id": str(chunk.id),
+                        "vector": vector,
+                        "payload": {
+                            "repository_id": str(repository.id),
+                            "code_chunk_id": str(chunk.id),
+                            "repository_file_id": str(chunk.repository_file_id),
+                            "start_line": chunk.start_line,
+                            "end_line": chunk.end_line,
+                        },
+                    }
+                    for chunk, vector in zip(pending_chunks, vectors)
+                ]
+                await vector_store.upsert_chunks(points)
+                for chunk in pending_chunks:
+                    chunk.vector_id = str(chunk.id)
 
             repository.file_count = len(scanned_files)
             repository.total_size_bytes = sum(f["size_bytes"] for f in scanned_files)
@@ -260,8 +292,8 @@ async def ingest_repository(repository_id: uuid.UUID) -> None:
             repository.error_message = None
             await db.commit()
             logger.info(
-                "ingest_repository: %s scanned %d files, %d chunks",
-                repository_id, len(scanned_files), chunk_total,
+                "ingest_repository: %s scanned %d files, %d chunks, %d embedded",
+                repository_id, len(scanned_files), chunk_total, len(pending_chunks),
             )
         except Exception as exc:
             logger.exception("ingest_repository failed for %s", repository_id)

@@ -104,6 +104,15 @@ running PostgreSQL instance with a database matching `DATABASE_URL`
 (create it yourself, e.g. `createdb repomind_ai`) — there is no
 Docker Compose service for it yet.
 
+Ingestion also embeds every code chunk and stores the vectors in Qdrant
+(`QDRANT_HOST`/`QDRANT_PORT`, default `localhost:6333`), so a local
+Qdrant instance needs to be running too, e.g.
+`docker run -p 6333:6333 qdrant/qdrant`. The collection
+(`QDRANT_COLLECTION_NAME`) is created automatically on first use. An
+`OPENAI_API_KEY` is also required — without one, ingestion fails at
+the embedding step and the repository is marked `failed` with that
+error message.
+
 Auth endpoints: `POST /auth/register`, `POST /auth/login` (returns a
 JWT), `GET /auth/me` (requires `Authorization: Bearer <token>`).
 

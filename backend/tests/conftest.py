@@ -68,6 +68,17 @@ def _stub_ingestion(monkeypatch):
     monkeypatch.setattr("app.api.repositories.ingest_repository", _noop)
 
 
+@pytest.fixture(autouse=True)
+def _stub_vector_store(monkeypatch):
+    # No live Qdrant server in the test environment, same reasoning as
+    # stubbing GitHub/ingestion above. tests/test_vector_store.py covers
+    # the Qdrant HTTP calls themselves via a mocked transport.
+    async def _noop_delete(repository_id):
+        return None
+
+    monkeypatch.setattr("app.services.vector_store.delete_by_repository", _noop_delete)
+
+
 @pytest_asyncio.fixture
 async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
