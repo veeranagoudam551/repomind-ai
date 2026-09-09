@@ -69,6 +69,11 @@ GitHub URL, and shows its ingestion status as it moves through
 `pending → cloning → processing → completed`. Click a repository to
 see its full detail page (`/dashboard/[id]`) — status, any failure
 message, and every scanned file — with buttons to reindex or delete.
+Once a repository is `completed`, its **Chat** button opens
+`/dashboard/[id]/chat`, where "New chat" starts a conversation
+(`/dashboard/[id]/chat/[conversationId]`) — ask a question and it's
+answered grounded in that repository's indexed code, with the source
+files shown under each reply.
 
 #### End-to-end tests
 

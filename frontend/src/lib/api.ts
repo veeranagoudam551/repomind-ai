@@ -143,3 +143,60 @@ export function reindexRepository(token: string, id: string): Promise<Repository
     headers: authHeaders(token),
   });
 }
+
+export type Conversation = {
+  id: string;
+  repository_id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type MessageRole = "user" | "assistant" | "system";
+
+export type MessageSource = {
+  code_chunk_id: string;
+  file_path: string;
+  start_line: number | null;
+  end_line: number | null;
+};
+
+export type ChatMessage = {
+  id: string;
+  role: MessageRole;
+  content: string;
+  sources: MessageSource[];
+  created_at: string;
+};
+
+export function listConversations(token: string, repositoryId: string): Promise<Conversation[]> {
+  return request<Conversation[]>(`/repositories/${repositoryId}/conversations`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function createConversation(token: string, repositoryId: string): Promise<Conversation> {
+  return request<Conversation>(`/repositories/${repositoryId}/conversations`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ title: null }),
+  });
+}
+
+export function listMessages(token: string, conversationId: string): Promise<ChatMessage[]> {
+  return request<ChatMessage[]>(`/conversations/${conversationId}/messages`, {
+    headers: authHeaders(token),
+  });
+}
+
+export function sendMessage(
+  token: string,
+  conversationId: string,
+  content: string
+): Promise<ChatMessage> {
+  return request<ChatMessage>(`/conversations/${conversationId}/messages`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ content }),
+  });
+}

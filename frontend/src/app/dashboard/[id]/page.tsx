@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ArrowLeft, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, MessageSquare, RefreshCw, Trash2 } from "lucide-react";
 import { deleteRepositoryAndRedirect, reindexRepositoryAction } from "@/app/actions/repositories";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -121,6 +121,19 @@ export default async function RepositoryDetailPage(props: PageProps<"/dashboard/
           </div>
 
           <div className="flex gap-2">
+            {repository.status === "completed" ? (
+              <Button asChild size="sm">
+                <Link href={`/dashboard/${repository.id}/chat`}>
+                  <MessageSquare />
+                  Chat
+                </Link>
+              </Button>
+            ) : (
+              <Button size="sm" disabled>
+                <MessageSquare />
+                Chat
+              </Button>
+            )}
             <form action={reindexRepositoryAction.bind(null, repository.id)}>
               <Button type="submit" variant="outline" size="sm" disabled={inProgress}>
                 <RefreshCw />
