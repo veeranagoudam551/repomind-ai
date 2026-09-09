@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ArrowLeft, MessageSquare, RefreshCw, SearchIcon, Trash2 } from "lucide-react";
+import { ArrowLeft, MessageSquare, RefreshCw, Sparkles, SearchIcon, Trash2 } from "lucide-react";
 import { deleteRepositoryAndRedirect, reindexRepositoryAction } from "@/app/actions/repositories";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -183,6 +183,9 @@ export default async function RepositoryDetailPage(props: PageProps<"/dashboard/
                     <th className="px-3 py-2 font-medium">Path</th>
                     <th className="px-3 py-2 font-medium">Language</th>
                     <th className="px-3 py-2 text-right font-medium">Size</th>
+                    <th className="px-3 py-2 font-medium">
+                      <span className="sr-only">Actions</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -192,6 +195,15 @@ export default async function RepositoryDetailPage(props: PageProps<"/dashboard/
                       <td className="px-3 py-2 text-muted-foreground">{file.language ?? "—"}</td>
                       <td className="px-3 py-2 text-right text-muted-foreground">
                         {formatBytes(file.size_bytes)}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <Link
+                          href={`/dashboard/${repository.id}/files/${file.id}/explain`}
+                          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                        >
+                          <Sparkles className="size-3.5" />
+                          Explain
+                        </Link>
                       </td>
                     </tr>
                   ))}

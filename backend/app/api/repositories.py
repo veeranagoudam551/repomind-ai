@@ -20,6 +20,7 @@ from app.schemas.repository import (
     RepositoryFileRead,
     RepositoryRead,
     RepositorySearchRequest,
+    ReviewFileResponse,
 )
 from app.services import vector_store
 from app.services.code_chunking import reconstruct_file_content
@@ -209,15 +210,9 @@ async def list_repository_files(
     return result.all()
 
 
-@router.post("/{repository_id}/files/{file_id}/explain", response_model=ExplainFileResponse)
-async def explain_repository_file(
-    repository_id: UUID,
-    file_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    await _get_owned_repository(repository_id, db, current_user)
-
+async def _get_file_content_for_llm(
+    repository_id: UUID, file_id: UUID, db: AsyncSession
+) -> tuple[RepositoryFile, str]:
     repository_file = await db.scalar(
         select(RepositoryFile).where(
             RepositoryFile.id == file_id, RepositoryFile.repository_id == repository_id
@@ -236,10 +231,22 @@ async def explain_repository_file(
     if not chunks:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No content available to explain for this file",
+            detail="No content available for this file",
         )
 
-    content = reconstruct_file_content(chunks)
+    return repository_file, reconstruct_file_content(chunks)
+
+
+@router.post("/{repository_id}/files/{file_id}/explain", response_model=ExplainFileResponse)
+async def explain_repository_file(
+    repository_id: UUID,
+    file_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repository(repository_id, db, current_user)
+    repository_file, content = await _get_file_content_for_llm(repository_id, file_id, db)
+
     system_prompt = (
         "You are a code assistant explaining a single source file from a "
         "software repository to a developer. Describe what it does, its "
@@ -257,6 +264,38 @@ async def explain_repository_file(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
     return ExplainFileResponse(file_path=repository_file.file_path, explanation=explanation)
+
+
+@router.post("/{repository_id}/files/{file_id}/review", response_model=ReviewFileResponse)
+async def review_repository_file(
+    repository_id: UUID,
+    file_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repository(repository_id, db, current_user)
+    repository_file, content = await _get_file_content_for_llm(repository_id, file_id, db)
+
+    system_prompt = (
+        "You are a senior software engineer performing a code review of a "
+        "single source file from a repository. Point out real bugs, "
+        "security issues, edge cases, and code smells, and suggest "
+        "concrete improvements. Reference specific lines or symbols where "
+        "possible. Base your review only on the file content given; don't "
+        "invent behavior it doesn't show, and don't invent issues in code "
+        "that isn't there. If the file looks clean, say so plainly rather "
+        "than manufacturing nitpicks."
+    )
+    user_prompt = f"File: {repository_file.file_path}\n\n```\n{content}\n```"
+
+    try:
+        review = await generate_response(system_prompt, user_prompt)
+    except LLMConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except LLMAPIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    return ReviewFileResponse(file_path=repository_file.file_path, review=review)
 
 
 @router.get("/{repository_id}/chunks", response_model=list[CodeChunkRead])

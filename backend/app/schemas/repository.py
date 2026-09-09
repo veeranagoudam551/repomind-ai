@@ -68,3 +68,8 @@ class CodeSearchResult(BaseModel):
 class ExplainFileResponse(BaseModel):
     file_path: str
     explanation: str
+
+
+class ReviewFileResponse(BaseModel):
+    file_path: str
+    review: str

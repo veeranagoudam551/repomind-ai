@@ -494,3 +494,79 @@ async def test_explain_file_maps_llm_config_error_to_503(client, db_session, mon
         f"/repositories/{repo_id}/files/{chunk.repository_file_id}/explain", headers=headers
     )
     assert response.status_code == 503
+
+
+async def test_review_file_success(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "reviewer1@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        assert "app/main.py" in user_message
+        assert "def create_app(): ..." in user_message
+        return "No issues found; the file is small and clean."
+
+    monkeypatch.setattr("app.api.repositories.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/files/{chunk.repository_file_id}/review", headers=headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["file_path"] == "app/main.py"
+    assert body["review"] == "No issues found; the file is small and clean."
+
+
+async def test_review_file_not_found(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "reviewer2@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/files/00000000-0000-0000-0000-000000000000/review",
+        headers=headers,
+    )
+    assert response.status_code == 404
+
+
+async def test_review_file_not_found_for_other_user(client, db_session, monkeypatch):
+    headers_a = await register_and_login(client, "reviewowner@example.com")
+    headers_b = await register_and_login(client, "reviewintruder@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers_a)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/files/{chunk.repository_file_id}/review", headers=headers_b
+    )
+    assert response.status_code == 404
+
+
+async def test_review_file_rejects_when_no_chunks(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "reviewer3@example.com")
+    _mock_fetch(monkeypatch, result=make_repo_info())
+    created = await client.post(
+        "/repositories", json={"github_url": "octocat/Hello-World"}, headers=headers
+    )
+    repo_id = uuid.UUID(created.json()["id"])
+
+    repo_file = RepositoryFile(repository_id=repo_id, file_path="image.png", size_bytes=10)
+    db_session.add(repo_file)
+    await db_session.commit()
+    await db_session.refresh(repo_file)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/files/{repo_file.id}/review", headers=headers
+    )
+    assert response.status_code == 400
+
+
+async def test_review_file_maps_llm_config_error_to_503(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "reviewer4@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        raise LLMConfigError("ANTHROPIC_API_KEY is not configured")
+
+    monkeypatch.setattr("app.api.repositories.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/files/{chunk.repository_file_id}/review", headers=headers
+    )
+    assert response.status_code == 503

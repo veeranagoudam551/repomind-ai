@@ -222,3 +222,19 @@ export function sendMessage(
     body: JSON.stringify({ content }),
   });
 }
+
+export type ExplainFileResult = {
+  file_path: string;
+  explanation: string;
+};
+
+export function explainRepositoryFile(
+  token: string,
+  repositoryId: string,
+  fileId: string
+): Promise<ExplainFileResult> {
+  return request<ExplainFileResult>(
+    `/repositories/${repositoryId}/files/${fileId}/explain`,
+    { method: "POST", headers: authHeaders(token) }
+  );
+}
