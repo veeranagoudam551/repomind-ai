@@ -89,7 +89,14 @@ delete flow. Starts the Next.js dev server itself and starts/reuses
 the FastAPI backend automatically (needs a local Postgres reachable
 via the backend's `DATABASE_URL`, same as running the backend
 manually), and deletes the `e2e_`-prefixed test users it creates from
-the dev database when the run finishes.
+the dev database when the run finishes. A real `GITHUB_TOKEN` in
+`.env` is strongly recommended before running this suite repeatedly —
+each run adds a real repository via the live GitHub API, and the
+unauthenticated 60 req/hour limit exhausts fast. Since ingestion now
+also embeds every chunk (Day 15), the suite passes whether or not a
+real `OPENAI_API_KEY` is configured: it waits for either terminal
+status and asserts accordingly (`README` visible on `completed`, the
+real error text on `failed`).
 
 ### Backend
 
