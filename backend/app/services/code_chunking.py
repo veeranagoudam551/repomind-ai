@@ -77,3 +77,29 @@ def chunk_file(file_path: str, raw: bytes, max_lines: int, overlap_lines: int) -
     if text is None:
         return []
     return chunk_text(text, max_lines=max_lines, overlap_lines=overlap_lines)
+
+
+def reconstruct_file_content(chunks) -> str:
+    """Stitch a file's `code_chunks` back into its original content.
+
+    Chunks overlap by design (`CHUNK_OVERLAP_LINES`) so a window boundary
+    never cuts off context, but that means naively joining `chunk.content`
+    values would repeat the overlapping lines at every boundary. Each
+    chunk's own `start_line`/`end_line` gives exact 1-indexed coverage, so
+    walking them in order and keeping only the lines past what's already
+    been covered reconstructs the file exactly once each.
+
+    Accepts anything with `.chunk_index`, `.content`, `.start_line`,
+    `.end_line` - `CodeChunk` rows satisfy this without any conversion.
+    """
+    ordered = sorted(chunks, key=lambda chunk: chunk.chunk_index)
+    lines: list[str] = []
+    last_line_covered = 0
+    for chunk in ordered:
+        chunk_lines = chunk.content.split("\n")
+        start_line = chunk.start_line if chunk.start_line is not None else last_line_covered + 1
+        end_line = chunk.end_line if chunk.end_line is not None else start_line + len(chunk_lines) - 1
+        skip = max(last_line_covered - start_line + 1, 0)
+        lines.extend(chunk_lines[skip:])
+        last_line_covered = max(last_line_covered, end_line)
+    return "\n".join(lines)

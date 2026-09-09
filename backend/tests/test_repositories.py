@@ -7,6 +7,7 @@ from app.models.repository import Repository, RepositoryStatus
 from app.models.repository_file import RepositoryFile
 from app.services.embeddings import EmbeddingConfigError
 from app.services.github import GitHubAPIError, GitHubRepoNotFound
+from app.services.llm import LLMConfigError
 from tests.conftest import register_and_login
 from tests.factories import make_repo_info
 
@@ -417,3 +418,79 @@ async def test_search_rejects_empty_query(client, db_session, monkeypatch):
         f"/repositories/{repo_id}/search", json={"query": ""}, headers=headers
     )
     assert response.status_code == 422
+
+
+async def test_explain_file_success(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "explainer1@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        assert "app/main.py" in user_message
+        assert "def create_app(): ..." in user_message
+        return "This file defines the FastAPI application factory."
+
+    monkeypatch.setattr("app.api.repositories.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/files/{chunk.repository_file_id}/explain", headers=headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["file_path"] == "app/main.py"
+    assert body["explanation"] == "This file defines the FastAPI application factory."
+
+
+async def test_explain_file_not_found(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "explainer2@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/files/00000000-0000-0000-0000-000000000000/explain",
+        headers=headers,
+    )
+    assert response.status_code == 404
+
+
+async def test_explain_file_not_found_for_other_user(client, db_session, monkeypatch):
+    headers_a = await register_and_login(client, "explainowner@example.com")
+    headers_b = await register_and_login(client, "explainintruder@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers_a)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/files/{chunk.repository_file_id}/explain", headers=headers_b
+    )
+    assert response.status_code == 404
+
+
+async def test_explain_file_rejects_when_no_chunks(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "explainer3@example.com")
+    _mock_fetch(monkeypatch, result=make_repo_info())
+    created = await client.post(
+        "/repositories", json={"github_url": "octocat/Hello-World"}, headers=headers
+    )
+    repo_id = uuid.UUID(created.json()["id"])
+
+    repo_file = RepositoryFile(repository_id=repo_id, file_path="image.png", size_bytes=10)
+    db_session.add(repo_file)
+    await db_session.commit()
+    await db_session.refresh(repo_file)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/files/{repo_file.id}/explain", headers=headers
+    )
+    assert response.status_code == 400
+
+
+async def test_explain_file_maps_llm_config_error_to_503(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "explainer4@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        raise LLMConfigError("ANTHROPIC_API_KEY is not configured")
+
+    monkeypatch.setattr("app.api.repositories.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/files/{chunk.repository_file_id}/explain", headers=headers
+    )
+    assert response.status_code == 503

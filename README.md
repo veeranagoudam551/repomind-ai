@@ -144,11 +144,16 @@ files/chunks), `POST /repositories/{id}/reindex` (re-runs ingestion;
 `GET /repositories/{id}/files` (scanned file metadata once ingestion
 completes), `GET /repositories/{id}/chunks` (optional `?file_id=`
 filter; the line-window chunks generated from each file's content),
-and `POST /repositories/{id}/search` (body: `{"query": str, "limit":
+`POST /repositories/{id}/search` (body: `{"query": str, "limit":
 int}`, default `limit` 10; embeds the query and returns the closest
 code chunks from that repository — `content`, `file_path`, line range,
-and similarity `score`, highest first). Set `GITHUB_TOKEN` in `.env`
-to raise GitHub's rate limit from 60 to 5000 requests/hour.
+and similarity `score`, highest first), and
+`POST /repositories/{id}/files/{file_id}/explain` (no body; reconstructs
+that file's original content from its chunks and asks the LLM to
+explain it — needs only `ANTHROPIC_API_KEY`, not `OPENAI_API_KEY`,
+since no embedding/search is involved; `400` if the file has no chunks
+to explain, e.g. a binary file). Set `GITHUB_TOKEN` in `.env` to raise
+GitHub's rate limit from 60 to 5000 requests/hour.
 
 After creation, a repository moves through
 `pending → cloning → processing → completed` (or `failed`, see

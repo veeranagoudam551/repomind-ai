@@ -63,3 +63,8 @@ class CodeSearchResult(BaseModel):
     start_line: Optional[int]
     end_line: Optional[int]
     score: float
+
+
+class ExplainFileResponse(BaseModel):
+    file_path: str
+    explanation: str

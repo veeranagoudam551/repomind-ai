@@ -15,12 +15,14 @@ from app.models.user import User
 from app.schemas.repository import (
     CodeChunkRead,
     CodeSearchResult,
+    ExplainFileResponse,
     RepositoryCreate,
     RepositoryFileRead,
     RepositoryRead,
     RepositorySearchRequest,
 )
 from app.services import vector_store
+from app.services.code_chunking import reconstruct_file_content
 from app.services.embeddings import EmbeddingAPIError, EmbeddingConfigError, generate_embedding
 from app.services.github import (
     GitHubAPIError,
@@ -29,6 +31,7 @@ from app.services.github import (
     fetch_repository,
     parse_github_url,
 )
+from app.services.llm import LLMAPIError, LLMConfigError, generate_response
 from app.services.repository_ingestion import ingest_repository
 from app.services.vector_store import VectorStoreError
 
@@ -204,6 +207,56 @@ async def list_repository_files(
         .order_by(RepositoryFile.file_path)
     )
     return result.all()
+
+
+@router.post("/{repository_id}/files/{file_id}/explain", response_model=ExplainFileResponse)
+async def explain_repository_file(
+    repository_id: UUID,
+    file_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repository(repository_id, db, current_user)
+
+    repository_file = await db.scalar(
+        select(RepositoryFile).where(
+            RepositoryFile.id == file_id, RepositoryFile.repository_id == repository_id
+        )
+    )
+    if repository_file is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
+
+    chunks = (
+        await db.scalars(
+            select(CodeChunk)
+            .where(CodeChunk.repository_file_id == file_id)
+            .order_by(CodeChunk.chunk_index)
+        )
+    ).all()
+    if not chunks:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No content available to explain for this file",
+        )
+
+    content = reconstruct_file_content(chunks)
+    system_prompt = (
+        "You are a code assistant explaining a single source file from a "
+        "software repository to a developer. Describe what it does, its "
+        "key functions/classes/exports, and anything a newcomer to the "
+        "codebase would need to know. Base your explanation only on the "
+        "file content given; don't invent behavior it doesn't show."
+    )
+    user_prompt = f"File: {repository_file.file_path}\n\n```\n{content}\n```"
+
+    try:
+        explanation = await generate_response(system_prompt, user_prompt)
+    except LLMConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except LLMAPIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    return ExplainFileResponse(file_path=repository_file.file_path, explanation=explanation)
 
 
 @router.get("/{repository_id}/chunks", response_model=list[CodeChunkRead])
