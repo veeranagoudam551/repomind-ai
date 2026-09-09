@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_collection_name: str = "repomind_code_chunks"
+    llm_provider: str = "anthropic"
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-5"
 
     @property
     def cors_origin_list(self) -> list[str]:

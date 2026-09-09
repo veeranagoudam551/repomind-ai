@@ -111,7 +111,8 @@ Qdrant instance needs to be running too, e.g.
 (`QDRANT_COLLECTION_NAME`) is created automatically on first use. An
 `OPENAI_API_KEY` is also required — without one, ingestion fails at
 the embedding step and the repository is marked `failed` with that
-error message.
+error message. Chatting in a conversation additionally requires an
+`ANTHROPIC_API_KEY` — without one, sending a message returns `503`.
 
 Auth endpoints: `POST /auth/register`, `POST /auth/login` (returns a
 JWT), `GET /auth/me` (requires `Authorization: Bearer <token>`).
@@ -137,6 +138,21 @@ After creation, a repository moves through
 `pending → cloning → processing → completed` (or `failed`, see
 `error_message`) as it's downloaded and its files are scanned; poll
 `GET /repositories/{id}` to watch progress.
+
+Conversation endpoints (require `Authorization: Bearer <token>`):
+`POST /repositories/{id}/conversations` (body: `{"title": str | null}`)
+and `GET /repositories/{id}/conversations` create/list chat threads
+scoped to a repository; `POST /conversations/{id}/messages` (body:
+`{"content": str}`) is the RAG chat endpoint — it stores your message,
+embeds it, searches Qdrant for that repository's closest code chunks,
+and asks the LLM (`ANTHROPIC_API_KEY`/`ANTHROPIC_MODEL`, default
+`claude-sonnet-5`) to answer strictly from that retrieved context,
+returning the assistant's reply plus the `sources` (file path, line
+range) it was grounded in; if nothing relevant is indexed yet, it
+short-circuits to a canned "couldn't find any indexed code" reply
+without calling the LLM. `GET /conversations/{id}/messages` replays
+the full thread with each past assistant reply's sources resolved the
+same way.
 
 ### Running tests
 
