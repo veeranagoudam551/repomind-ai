@@ -49,3 +49,17 @@ class CodeChunkRead(BaseModel):
     end_line: Optional[int]
     vector_id: Optional[str]
     created_at: datetime
+
+
+class RepositorySearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class CodeSearchResult(BaseModel):
+    code_chunk_id: UUID
+    file_path: str
+    content: str
+    start_line: Optional[int]
+    end_line: Optional[int]
+    score: float

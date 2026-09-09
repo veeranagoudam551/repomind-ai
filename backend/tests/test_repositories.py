@@ -5,6 +5,7 @@ from sqlalchemy import select
 from app.models.code_chunk import CodeChunk
 from app.models.repository import Repository, RepositoryStatus
 from app.models.repository_file import RepositoryFile
+from app.services.embeddings import EmbeddingConfigError
 from app.services.github import GitHubAPIError, GitHubRepoNotFound
 from tests.conftest import register_and_login
 from tests.factories import make_repo_info
@@ -299,3 +300,120 @@ async def test_reindex_unknown_id_returns_404(client):
         "/repositories/00000000-0000-0000-0000-000000000000/reindex", headers=headers
     )
     assert response.status_code == 404
+
+
+async def _make_searchable_repository(client, db_session, monkeypatch, headers) -> uuid.UUID:
+    _mock_fetch(monkeypatch, result=make_repo_info())
+    created = await client.post(
+        "/repositories", json={"github_url": "octocat/Hello-World"}, headers=headers
+    )
+    repo_id = uuid.UUID(created.json()["id"])
+
+    repo_file = RepositoryFile(repository_id=repo_id, file_path="app/main.py", size_bytes=10)
+    db_session.add(repo_file)
+    await db_session.commit()
+    await db_session.refresh(repo_file)
+
+    chunk = CodeChunk(
+        repository_id=repo_id,
+        repository_file_id=repo_file.id,
+        chunk_index=0,
+        content="def create_app(): ...",
+        start_line=1,
+        end_line=1,
+        vector_id="whatever",
+    )
+    db_session.add(chunk)
+    await db_session.commit()
+    await db_session.refresh(chunk)
+    return repo_id, chunk
+
+
+async def test_search_requires_auth(client):
+    response = await client.post(
+        "/repositories/00000000-0000-0000-0000-000000000000/search", json={"query": "hi"}
+    )
+    assert response.status_code == 401
+
+
+async def test_search_returns_ranked_results(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "searcher1@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_embed(text):
+        return [0.1, 0.2]
+
+    async def _fake_search(vector, repository_id, limit=10):
+        assert vector == [0.1, 0.2]
+        assert str(repository_id) == str(repo_id)
+        return [{"id": str(chunk.id), "score": 0.87, "payload": {"code_chunk_id": str(chunk.id)}}]
+
+    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+    monkeypatch.setattr("app.api.repositories.vector_store.search", _fake_search)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/search", json={"query": "how is the app created"}, headers=headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["code_chunk_id"] == str(chunk.id)
+    assert body[0]["file_path"] == "app/main.py"
+    assert body[0]["content"] == "def create_app(): ..."
+    assert body[0]["score"] == 0.87
+
+
+async def test_search_returns_empty_when_no_hits(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "searcher2@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_embed(text):
+        return [0.1, 0.2]
+
+    async def _fake_search(vector, repository_id, limit=10):
+        return []
+
+    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+    monkeypatch.setattr("app.api.repositories.vector_store.search", _fake_search)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/search", json={"query": "nothing matches"}, headers=headers
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_search_not_found_for_other_user(client, db_session, monkeypatch):
+    headers_a = await register_and_login(client, "searchowner@example.com")
+    headers_b = await register_and_login(client, "searchintruder@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers_a)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/search", json={"query": "hi"}, headers=headers_b
+    )
+    assert response.status_code == 404
+
+
+async def test_search_maps_embedding_config_error_to_503(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "searcher3@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_embed(text):
+        raise EmbeddingConfigError("OPENAI_API_KEY is not configured")
+
+    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/search", json={"query": "hi"}, headers=headers
+    )
+    assert response.status_code == 503
+
+
+async def test_search_rejects_empty_query(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "searcher4@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/search", json={"query": ""}, headers=headers
+    )
+    assert response.status_code == 422

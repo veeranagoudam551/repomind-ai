@@ -125,9 +125,12 @@ repositories), `GET /repositories/{id}` (single repository, with live
 files/chunks), `POST /repositories/{id}/reindex` (re-runs ingestion;
 `409` if one is already in progress for that repo),
 `GET /repositories/{id}/files` (scanned file metadata once ingestion
-completes), and `GET /repositories/{id}/chunks` (optional `?file_id=`
-filter; the line-window chunks generated from each file's content,
-ready for embedding once Qdrant lands). Set `GITHUB_TOKEN` in `.env`
+completes), `GET /repositories/{id}/chunks` (optional `?file_id=`
+filter; the line-window chunks generated from each file's content),
+and `POST /repositories/{id}/search` (body: `{"query": str, "limit":
+int}`, default `limit` 10; embeds the query and returns the closest
+code chunks from that repository — `content`, `file_path`, line range,
+and similarity `score`, highest first). Set `GITHUB_TOKEN` in `.env`
 to raise GitHub's rate limit from 60 to 5000 requests/hour.
 
 After creation, a repository moves through

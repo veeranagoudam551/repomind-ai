@@ -79,6 +79,35 @@ async def upsert_chunks(points: list[dict]) -> None:
         )
 
 
+async def search(vector: list[float], repository_id: uuid.UUID, limit: int = 10) -> list[dict]:
+    """Semantic search within one repository's vectors.
+
+    Returns Qdrant's raw hits (`[{"id", "score", "payload"}, ...]`, highest
+    score first) - the caller joins `payload["code_chunk_id"]` back against
+    Postgres for the actual chunk content, since Qdrant only stores enough
+    payload to filter and locate a hit, not the content itself.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.post(
+            f"{_collection_url()}/points/search",
+            json={
+                "vector": vector,
+                "filter": {
+                    "must": [{"key": "repository_id", "match": {"value": str(repository_id)}}]
+                },
+                "limit": limit,
+                "with_payload": True,
+            },
+        )
+    if response.status_code == 404:
+        return []
+    if response.status_code != 200:
+        raise VectorStoreError(
+            f"Qdrant returned {response.status_code} searching points: {response.text}"
+        )
+    return response.json()["result"]
+
+
 async def delete_by_repository(repository_id: uuid.UUID) -> None:
     """Delete every point belonging to a repository, filtered by payload.
 

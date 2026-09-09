@@ -12,8 +12,16 @@ from app.models.code_chunk import CodeChunk
 from app.models.repository import Repository, RepositoryStatus
 from app.models.repository_file import RepositoryFile
 from app.models.user import User
-from app.schemas.repository import CodeChunkRead, RepositoryCreate, RepositoryFileRead, RepositoryRead
+from app.schemas.repository import (
+    CodeChunkRead,
+    CodeSearchResult,
+    RepositoryCreate,
+    RepositoryFileRead,
+    RepositoryRead,
+    RepositorySearchRequest,
+)
 from app.services import vector_store
+from app.services.embeddings import EmbeddingAPIError, EmbeddingConfigError, generate_embedding
 from app.services.github import (
     GitHubAPIError,
     GitHubRepoNotFound,
@@ -22,6 +30,7 @@ from app.services.github import (
     parse_github_url,
 )
 from app.services.repository_ingestion import ingest_repository
+from app.services.vector_store import VectorStoreError
 
 router = APIRouter(prefix="/repositories", tags=["repositories"])
 
@@ -210,3 +219,50 @@ async def list_repository_chunks(
         query = query.where(CodeChunk.repository_file_id == file_id)
     result = await db.scalars(query.order_by(CodeChunk.repository_file_id, CodeChunk.chunk_index))
     return result.all()
+
+
+@router.post("/{repository_id}/search", response_model=list[CodeSearchResult])
+async def search_repository(
+    repository_id: UUID,
+    payload: RepositorySearchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repository(repository_id, db, current_user)
+
+    try:
+        query_vector = await generate_embedding(payload.query)
+    except EmbeddingConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except EmbeddingAPIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    try:
+        hits = await vector_store.search(query_vector, repository_id, limit=payload.limit)
+    except VectorStoreError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    if not hits:
+        return []
+
+    score_by_chunk_id = {UUID(hit["payload"]["code_chunk_id"]): hit["score"] for hit in hits}
+
+    rows = await db.execute(
+        select(CodeChunk, RepositoryFile.file_path)
+        .join(RepositoryFile, CodeChunk.repository_file_id == RepositoryFile.id)
+        .where(CodeChunk.id.in_(score_by_chunk_id.keys()))
+    )
+
+    results = [
+        CodeSearchResult(
+            code_chunk_id=chunk.id,
+            file_path=file_path,
+            content=chunk.content,
+            start_line=chunk.start_line,
+            end_line=chunk.end_line,
+            score=score_by_chunk_id[chunk.id],
+        )
+        for chunk, file_path in rows
+    ]
+    results.sort(key=lambda r: r.score, reverse=True)
+    return results

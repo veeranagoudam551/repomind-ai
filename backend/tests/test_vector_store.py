@@ -12,6 +12,7 @@ from app.services.vector_store import (
     VectorStoreError,
     delete_by_repository,
     ensure_collection,
+    search,
     upsert_chunks,
 )
 
@@ -109,6 +110,42 @@ async def test_upsert_chunks_raises_on_api_error(monkeypatch):
     _install_mock_transport(monkeypatch, handler)
     with pytest.raises(VectorStoreError):
         await upsert_chunks([{"id": "abc", "vector": [0.1], "payload": {}}])
+
+
+async def test_search_sends_vector_and_repository_filter(monkeypatch):
+    def handler(request):
+        assert request.url.path.endswith("/points/search")
+        payload = json.loads(request.content)
+        assert payload["vector"] == [0.1, 0.2]
+        assert payload["limit"] == 5
+        assert payload["filter"] == {
+            "must": [{"key": "repository_id", "match": {"value": "repo-1"}}]
+        }
+        return httpx.Response(
+            200,
+            json={"result": [{"id": "abc", "score": 0.9, "payload": {"code_chunk_id": "c1"}}]},
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    hits = await search([0.1, 0.2], "repo-1", limit=5)
+    assert hits == [{"id": "abc", "score": 0.9, "payload": {"code_chunk_id": "c1"}}]
+
+
+async def test_search_returns_empty_list_when_collection_missing(monkeypatch):
+    def handler(request):
+        return httpx.Response(404, json={"status": "not found"})
+
+    _install_mock_transport(monkeypatch, handler)
+    assert await search([0.1], "repo-1") == []
+
+
+async def test_search_raises_on_api_error(monkeypatch):
+    def handler(request):
+        return httpx.Response(500, text="boom")
+
+    _install_mock_transport(monkeypatch, handler)
+    with pytest.raises(VectorStoreError):
+        await search([0.1], "repo-1")
 
 
 async def test_delete_by_repository_sends_payload_filter(monkeypatch):
