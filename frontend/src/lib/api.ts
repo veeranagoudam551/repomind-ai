@@ -328,11 +328,12 @@ export type AgentResult = {
 export function runRepositoryAgent(
   token: string,
   repositoryId: string,
-  goal: string
+  goal: string,
+  maxSteps?: number
 ): Promise<AgentResult> {
   return request<AgentResult>(`/repositories/${repositoryId}/agent`, {
     method: "POST",
     headers: authHeaders(token),
-    body: JSON.stringify({ goal }),
+    body: JSON.stringify({ goal, ...(maxSteps ? { max_steps: maxSteps } : {}) }),
   });
 }

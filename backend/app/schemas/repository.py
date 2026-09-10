@@ -106,6 +106,7 @@ class SecurityScanResponse(BaseModel):
 
 class AgentRequest(BaseModel):
     goal: str = Field(min_length=1, max_length=2000)
+    max_steps: int = Field(default=4, ge=1, le=10)
 
 
 class AgentStepRead(BaseModel):

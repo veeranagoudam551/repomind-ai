@@ -592,7 +592,7 @@ async def run_repository_agent(
     await _get_owned_repository(repository_id, db, current_user)
 
     try:
-        final_state = await run_agent(repository_id, payload.goal, db)
+        final_state = await run_agent(repository_id, payload.goal, db, max_steps=payload.max_steps)
     except LLMConfigError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
     except LLMAPIError as exc:

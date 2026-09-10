@@ -7,10 +7,15 @@ import { Input } from "@/components/ui/input";
 import { ApiError, getRepository, runRepositoryAgent, type AgentStep } from "@/lib/api";
 import { deleteSession, getSessionToken } from "@/lib/session";
 
+const MAX_STEPS_OPTIONS = [2, 4, 6, 8, 10];
+const DEFAULT_MAX_STEPS = 4;
+
 export default async function RepositoryAgentPage(props: PageProps<"/dashboard/[id]/agent">) {
   const { id } = await props.params;
-  const { goal: rawGoal } = await props.searchParams;
+  const { goal: rawGoal, max_steps: rawMaxSteps } = await props.searchParams;
   const goal = typeof rawGoal === "string" ? rawGoal.trim() : "";
+  const parsedMaxSteps = typeof rawMaxSteps === "string" ? Number(rawMaxSteps) : NaN;
+  const maxSteps = MAX_STEPS_OPTIONS.includes(parsedMaxSteps) ? parsedMaxSteps : DEFAULT_MAX_STEPS;
 
   const token = await getSessionToken();
   if (!token) {
@@ -36,7 +41,7 @@ export default async function RepositoryAgentPage(props: PageProps<"/dashboard/[
   let agentError: string | undefined;
   if (goal) {
     try {
-      const result = await runRepositoryAgent(token, id, goal);
+      const result = await runRepositoryAgent(token, id, goal, maxSteps);
       answer = result.answer;
       steps = result.steps;
     } catch (err) {
@@ -67,6 +72,20 @@ export default async function RepositoryAgentPage(props: PageProps<"/dashboard/[
               required
               className="flex-1"
             />
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              Max steps
+              <select
+                name="max_steps"
+                defaultValue={maxSteps}
+                className="h-8 rounded-lg border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+              >
+                {MAX_STEPS_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </label>
             <Button type="submit">
               <Bot />
               Run

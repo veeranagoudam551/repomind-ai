@@ -1097,7 +1097,7 @@ async def test_agent_calls_security_scan_tool_then_finishes(client, db_session, 
     assert body["answer"] == "No security issues found."
 
 
-async def test_agent_forces_finish_after_max_tool_calls(client, db_session, monkeypatch):
+async def test_agent_forces_finish_after_default_max_steps(client, db_session, monkeypatch):
     headers = await register_and_login(client, "agent4@example.com")
     repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
 
@@ -1111,8 +1111,47 @@ async def test_agent_forces_finish_after_max_tool_calls(client, db_session, monk
     )
     assert response.status_code == 200
     body = response.json()
-    assert len(body["steps"]) == 4
+    assert len(body["steps"]) == 4  # AgentRequest.max_steps default
     assert body["answer"] != ""
+
+
+async def test_agent_respects_custom_max_steps(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "agent11@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        return json.dumps({"action": "tool", "tool": "does_not_exist", "arguments": {}})
+
+    monkeypatch.setattr("app.services.agent.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent",
+        json={"goal": "loop forever", "max_steps": 2},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["steps"]) == 2
+    assert body["answer"] != ""
+
+
+async def test_agent_rejects_out_of_range_max_steps(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "agent12@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent",
+        json={"goal": "hi", "max_steps": 11},
+        headers=headers,
+    )
+    assert response.status_code == 422
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent",
+        json={"goal": "hi", "max_steps": 0},
+        headers=headers,
+    )
+    assert response.status_code == 422
 
 
 async def test_agent_not_found_for_other_user(client, db_session, monkeypatch):

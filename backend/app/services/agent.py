@@ -28,6 +28,13 @@ just with shorter, tool-appropriate prompts (a few sentences instead of
 a full response) so a multi-step transcript doesn't balloon in size.
 security_scan needs no LLM or embedding call at all, same as its
 standalone endpoint (Day 30).
+
+Day 36 made the step budget (previously a hardcoded MAX_TOOL_CALLS)
+into a per-request `max_steps` parameter instead - a goal combining
+several of Day 35's tools plausibly needs more than 4 steps, and a
+single fixed value can't serve both a quick one-tool lookup and a
+longer investigation well. `AgentRequest.max_steps` (bounded 1-10)
+threads through `run_agent` down to `_build_graph`'s `plan_node`.
 """
 
 from __future__ import annotations
@@ -50,6 +57,10 @@ from app.services.llm import LLMAPIError, LLMConfigError, generate_response
 from app.services.security_scan import scan_content
 from app.services.vector_store import VectorStoreError
 
+# Default step budget when a caller doesn't specify one (Day 36's
+# AgentRequest.max_steps, bounded 1-10). Kept as a named constant since
+# most callers just want the sensible default rather than picking a
+# number every time.
 MAX_TOOL_CALLS = 4
 SEARCH_LIMIT = 5
 
@@ -348,9 +359,9 @@ async def _tool_security_scan(repository_id: UUID, arguments: dict, db: AsyncSes
     return "\n".join(findings) if findings else "security_scan found no issues."
 
 
-def _build_graph(repository_id: UUID, db: AsyncSession):
+def _build_graph(repository_id: UUID, db: AsyncSession, max_steps: int):
     async def plan_node(state: AgentState) -> AgentState:
-        forced_finish = len(state["steps"]) >= MAX_TOOL_CALLS
+        forced_finish = len(state["steps"]) >= max_steps
         transcript = "\n\n".join(
             f"Step {i + 1}: called {s['tool']}({s['arguments']}) -> {s['summary']}"
             for i, s in enumerate(state["steps"])
@@ -408,8 +419,10 @@ def _build_graph(repository_id: UUID, db: AsyncSession):
     return graph.compile()
 
 
-async def run_agent(repository_id: UUID, goal: str, db: AsyncSession) -> AgentState:
-    graph = _build_graph(repository_id, db)
+async def run_agent(
+    repository_id: UUID, goal: str, db: AsyncSession, max_steps: int = MAX_TOOL_CALLS
+) -> AgentState:
+    graph = _build_graph(repository_id, db, max_steps)
     initial_state: AgentState = {
         "goal": goal,
         "steps": [],
