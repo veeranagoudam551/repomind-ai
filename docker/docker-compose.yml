@@ -1,0 +1,79 @@
+# Local infrastructure for RepoMind AI: PostgreSQL, Redis, and Qdrant.
+#
+# This is Option A of the two setups documented in the root README's
+# "Local infrastructure" section - Option B (native Postgres + WSL2
+# Redis + a standalone Qdrant binary) is the one this project has
+# actually been built and verified against day to day, since Docker
+# Desktop's own resource overhead is a real problem on an 8 GB RAM
+# laptop. Neither the backend nor any app code depends on Docker
+# itself: everything here just puts a normal Postgres/Redis/Qdrant on
+# their usual localhost ports, same as Option B does by other means.
+#
+# Usage (from the repo root):
+#   docker compose -f docker/docker-compose.yml up -d
+#   docker compose -f docker/docker-compose.yml down        # stop
+#   docker compose -f docker/docker-compose.yml down -v     # stop + delete all local data
+#
+# Credentials/ports below match .env.example's defaults exactly, so a
+# fresh `cp backend/.env.example .env` needs no edits to work against
+# these containers. If you've changed POSTGRES_PASSWORD/etc. in your
+# own .env, pass it through explicitly (Compose only auto-loads a
+# .env file next to this one, not the project root's):
+#   docker compose -f docker/docker-compose.yml --env-file ../.env up -d
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: repomind-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-repomind}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-repomind}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-repomind} -d ${POSTGRES_DB:-repomind}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: repomind-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: repomind-qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    # No healthcheck here: Qdrant's official image is a minimal Debian
+    # slim base with no guaranteed shell tools (no bash, no wget/curl),
+    # so there's nothing reliable to probe with from inside the
+    # container without adding one. `docker compose ps` will still show
+    # it as "running"; check readiness from the host instead, e.g.
+    # `curl http://localhost:6333/collections`.
+
+volumes:
+  postgres_data:
+    name: repomind_postgres_data
+  redis_data:
+    name: repomind_redis_data
+  qdrant_data:
+    name: repomind_qdrant_data

@@ -102,6 +102,56 @@ real `OPENAI_API_KEY` is configured: it waits for either terminal
 status and asserts accordingly (`README` visible on `completed`, the
 real error text on `failed`).
 
+### Local infrastructure (PostgreSQL, Redis, Qdrant)
+
+The backend needs all three reachable before `alembic upgrade head` or
+`uvicorn` will work. Two ways to get them — pick whichever fits your
+machine, and mix and match if you like (e.g. native Postgres plus
+Dockerized Redis/Qdrant); the backend only ever talks to
+`localhost:<port>` per `.env`, so it can't tell which option provided
+that port and neither is a hard dependency of the app itself.
+
+**Option A — Docker Compose.** Needs Docker Desktop/Engine running.
+The most convenient option if your machine can spare the resources:
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+```
+
+Starts Postgres, Redis, and Qdrant together on their default ports
+with credentials matching `.env.example`'s defaults, no configuration
+needed. If you've changed `POSTGRES_PASSWORD`/etc. in your own `.env`,
+pass it through explicitly: `docker compose -f docker/docker-compose.yml
+--env-file .env up -d` (run from the repo root; Compose only
+auto-loads a `.env` next to the compose file, not the project root's).
+`docker compose -f docker/docker-compose.yml down` stops them; add
+`-v` to also drop the named volumes and lose all local data.
+
+**Option B — native/WSL services.** No Docker Desktop at all — what
+this project has actually been built and verified against day to day,
+e.g. on an 8 GB RAM laptop where Docker Desktop's own overhead is a
+real problem on top of everything else running:
+
+- **PostgreSQL** — install it natively (the official Windows
+  installer, `apt install postgresql` in WSL, Homebrew on macOS, etc.)
+  and `createdb repomind_ai`.
+- **Redis** — no official native-Windows build, so run it inside
+  WSL2 instead: `wsl --install` if you don't have a distro yet, then
+  inside it `sudo apt install redis-server` and
+  `redis-server --daemonize yes` (or `sudo service redis-server
+  start`, if that's set up). WSL2 forwards `localhost:6379` to Windows
+  automatically. On Linux/macOS, just install and run `redis-server`
+  directly.
+- **Qdrant** — also no official native-Windows build. Download the
+  standalone binary from [Qdrant's GitHub
+  releases](https://github.com/qdrant/qdrant/releases) (the
+  `x86_64-pc-windows-msvc` zip on Windows), extract it somewhere with
+  a short path (Windows' `MAX_PATH` limit breaks its on-disk storage
+  from a deeply-nested one, e.g. a temp folder), and run `qdrant.exe`
+  directly — no config needed, it listens on `localhost:6333`. On
+  Linux/macOS the prebuilt binary or `cargo install` both work fine
+  directly, no workaround needed.
+
 ### Backend
 
 ```bash
@@ -115,15 +165,11 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 Visit `http://localhost:8000/health` for the health check or
-`http://localhost:8000/docs` for interactive API docs. Requires a
-running PostgreSQL instance with a database matching `DATABASE_URL`
-(create it yourself, e.g. `createdb repomind_ai`) — there is no
-Docker Compose service for it yet.
+`http://localhost:8000/docs` for interactive API docs.
 
-Ingestion also embeds every code chunk and stores the vectors in Qdrant
-(`QDRANT_HOST`/`QDRANT_PORT`, default `localhost:6333`), so a local
-Qdrant instance needs to be running too, e.g.
-`docker run -p 6333:6333 qdrant/qdrant`. The collection
+Ingestion also embeds every code chunk and stores the vectors in
+Qdrant (`QDRANT_HOST`/`QDRANT_PORT`, default `localhost:6333` — see
+"Local infrastructure" above to get one running). The collection
 (`QDRANT_COLLECTION_NAME`) is created automatically on first use. An
 `OPENAI_API_KEY` is also required — without one, ingestion fails at
 the embedding step and the repository is marked `failed` with that
@@ -133,10 +179,8 @@ error message. Chatting in a conversation additionally requires an
 Since Day 34, ingestion runs as a Celery task (`app/tasks.py`) instead
 of a FastAPI `BackgroundTasks` job, so `POST /repositories` and
 `POST /repositories/{id}/reindex` need a Redis instance reachable at
-`REDIS_URL` (default `redis://localhost:6379/0`) and a worker process
-running, e.g. `docker run -p 6379:6379 redis` (or, on Windows without
-Docker, WSL's `apt install redis-server` works fine — WSL2 forwards
-`localhost:6379` to Windows automatically):
+`REDIS_URL` (default `redis://localhost:6379/0` — see "Local
+infrastructure" above) and a worker process running:
 
 ```bash
 celery -A app.core.celery_app worker --loglevel=info --pool=solo
@@ -145,7 +189,10 @@ celery -A app.core.celery_app worker --loglevel=info --pool=solo
 `--pool=solo` is required on native Windows — Celery's default
 "prefork" pool needs `os.fork()`, which Windows doesn't have. Without a
 running worker, `.delay()` calls still succeed (they just publish to
-Redis), but queued repositories stay `pending` forever until one starts.
+Redis), but queued repositories stay `pending` forever until one
+starts — and since Day 38, if Redis itself isn't reachable at all,
+`POST /repositories`/`.../reindex` fail fast into a `failed` status
+with a clear message instead of hanging the request.
 
 Auth endpoints: `POST /auth/register`, `POST /auth/login` (returns a
 JWT), `GET /auth/me` (requires `Authorization: Bearer <token>`).
