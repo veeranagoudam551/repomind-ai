@@ -16,13 +16,33 @@ import io
 import tarfile
 import uuid
 
+import httpx
+import pytest
 from sqlalchemy import select
 
 from app.models.code_chunk import CodeChunk
 from app.models.repository import Repository, RepositoryStatus
 from app.models.repository_file import RepositoryFile
 from app.models.user import User
-from app.services.repository_ingestion import ingest_repository
+from app.services.repository_ingestion import (
+    RepositoryIngestionError,
+    _download_tarball,
+    ingest_repository,
+)
+
+
+def _install_mock_transport(monkeypatch, handler):
+    # Same technique as test_vector_store.py/test_embeddings.py/test_llm.py/
+    # test_github.py (Day 42): a handler that raises instead of returning a
+    # Response simulates a connection-level failure, not a bad HTTP status.
+    transport = httpx.MockTransport(handler)
+
+    class FakeAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr("app.services.repository_ingestion.httpx.AsyncClient", FakeAsyncClient)
 
 
 def _make_tarball(files: dict[str, bytes]) -> bytes:
@@ -58,6 +78,21 @@ async def _make_repository(db_session) -> Repository:
     await db_session.commit()
     await db_session.refresh(repository)
     return repository
+
+
+async def test_download_tarball_raises_ingestion_error_on_connection_failure(monkeypatch):
+    # Day 43: a fully unreachable GitHub (DNS failure, connection refused,
+    # timeout) raises a raw httpx.RequestError with no .status_code to
+    # check - this must become a RepositoryIngestionError with a useful,
+    # contextualized message, the same fix Day 42 applied to the sibling
+    # service clients.
+    def handler(request):
+        raise httpx.ConnectError("Connection refused", request=request)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    with pytest.raises(RepositoryIngestionError, match="octocat/Hello-World@main"):
+        await _download_tarball("octocat", "Hello-World", "main")
 
 
 async def test_ingest_repository_embeds_chunks_and_sets_vector_id(db_session, monkeypatch):
@@ -192,3 +227,29 @@ async def test_ingest_repository_fails_when_embedding_errors(db_session, monkeyp
     repository = await db_session.get(Repository, repository.id)
     assert repository.status == RepositoryStatus.FAILED
     assert "embedding provider unreachable" in repository.error_message
+
+
+async def test_ingest_repository_fails_with_useful_message_when_github_unreachable(
+    db_session, monkeypatch
+):
+    # Day 43: unlike the tests above, this doesn't monkeypatch
+    # _download_tarball away - it lets the real function (and its Day 43
+    # try/except httpx.RequestError) run against a mocked transport, so the
+    # whole real code path from ingest_repository down through the actual
+    # httpx call is exercised, not a stand-in. Confirms the task ends in a
+    # clean FAILED with a message naming the repository, not an unhandled
+    # exception or a bare, uncontextualized httpx error string.
+    repository = await _make_repository(db_session)
+
+    def handler(request):
+        raise httpx.ConnectError("Connection refused", request=request)
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.repository_ingestion.AsyncSessionLocal", lambda: db_session)
+
+    await ingest_repository(repository.id)
+
+    repository = await db_session.get(Repository, repository.id)
+    assert repository.status == RepositoryStatus.FAILED
+    assert "Could not reach GitHub" in repository.error_message
+    assert "octocat/Hello-World@main" in repository.error_message

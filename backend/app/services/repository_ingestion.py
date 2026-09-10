@@ -125,8 +125,23 @@ async def _download_tarball(owner: str, repo: str, ref: str) -> bytes:
         headers["Authorization"] = f"Bearer {settings.github_token}"
 
     url = f"{GITHUB_API_BASE}/repos/{owner}/{repo}/tarball/{ref}"
-    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-        response = await client.get(url, headers=headers)
+    try:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await client.get(url, headers=headers)
+    except httpx.RequestError as exc:
+        # Day 42 fixed this same gap in app/services/github.py, embeddings.py,
+        # llm.py, and vector_store.py: a connection-level failure (GitHub
+        # unreachable, DNS failure, timeout) raises a raw httpx.RequestError
+        # with no .status_code to check, distinct from GitHub responding
+        # with an error status below. ingest_repository's own broad
+        # `except Exception` already prevents this from crashing the worker,
+        # but a raw httpx exception's message doesn't name the repository or
+        # explain what failed the way RepositoryIngestionError's messages
+        # do - converting it keeps every ingestion failure's error_message
+        # equally useful, not just the ones already going through this path.
+        raise RepositoryIngestionError(
+            f"Could not reach GitHub to download tarball for '{owner}/{repo}@{ref}': {exc}"
+        ) from exc
 
     if response.status_code != 200:
         raise RepositoryIngestionError(
