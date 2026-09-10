@@ -1,8 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
-import path from "node:path";
+import { BACKEND_DIR, PYTHON_BIN } from "./python-bin";
 
-const BACKEND_DIR = path.resolve(__dirname, "../../backend");
-const PYTHON_BIN = path.join(BACKEND_DIR, ".venv", "Scripts", "python.exe");
 const HEALTH_URL = "http://localhost:8000/health";
 
 // All e2e-created accounts use uniqueEmail() from ./helpers, which always

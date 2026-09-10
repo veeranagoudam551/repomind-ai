@@ -1,0 +1,231 @@
+name: CI
+
+# Runs the same checks a contributor would run locally per the README's
+# "Getting Started" section - backend pytest, frontend tsc/eslint, and the
+# Playwright e2e suite - against a clean, disposable GitHub Actions runner,
+# not this project's own dev machine.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned to what this project has actually been developed and verified
+  # against (`python --version` / `node --version` on the dev machine),
+  # not the latest available - avoids CI drifting to a version nobody's
+  # tested this code on.
+  PYTHON_VERSION: "3.9"
+  NODE_VERSION: "20"
+  # Matches .env.example's defaults exactly (same credentials
+  # docker/docker-compose.yml uses, Day 40) so no per-job DATABASE_URL
+  # override is needed beyond pointing at localhost.
+  POSTGRES_USER: repomind
+  POSTGRES_PASSWORD: changeme
+  POSTGRES_DB: repomind
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U repomind -d repomind"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://repomind:changeme@localhost:5432/repomind
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # No OPENAI_API_KEY/ANTHROPIC_API_KEY/QDRANT_*/REDIS_URL here: every
+      # backend test mocks its external call (httpx.MockTransport for
+      # OpenAI/Anthropic/GitHub/Qdrant, monkeypatched Celery .delay()) per
+      # conftest.py and each service's own test file - see Days 14-15,
+      # 17-18, 38, 42-43. Nothing in this suite makes a live network call.
+      - name: Run backend test suite
+        working-directory: backend
+        run: pytest
+
+  frontend:
+    name: Frontend typecheck & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # .next/ (and the typed-route declarations tsc needs) is gitignored
+      # and only ever generated locally by `next dev`/`next build` - every
+      # day since 11 that touched a typed route has run this by hand
+      # first; CI needs the same step since nothing else triggers it here.
+      - name: Generate Next.js route types
+        working-directory: frontend
+        run: npx next typegen
+
+      - name: Type-check
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: Lint
+        working-directory: frontend
+        run: npx eslint .
+
+  e2e:
+    name: End-to-end tests
+    runs-on: ubuntu-latest
+    # Waits on the two quicker jobs so an obviously-broken push fails fast
+    # without also paying for Playwright browser install + three services.
+    needs: [backend, frontend]
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U repomind -d repomind"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports: ["6333:6333"]
+        # No --health-cmd: confirmed on Day 40 (see docker/docker-compose.yml)
+        # that Qdrant's official image is a minimal Debian slim base with no
+        # guaranteed shell tools to probe with from inside the container.
+        # Readiness is checked from the runner instead - "Wait for Qdrant"
+        # step below - the same reasoning applied there.
+    env:
+      DATABASE_URL: postgresql+asyncpg://repomind:changeme@localhost:5432/repomind
+      REDIS_URL: redis://localhost:6379/0
+      QDRANT_HOST: localhost
+      QDRANT_PORT: 6333
+      # Raises GitHub's API rate limit from 60/hr (unauthenticated, shared
+      # across every concurrent GitHub Actions job on GitHub's IP range -
+      # a real flakiness risk) to 5000/hr, same as README's GITHUB_TOKEN
+      # paragraph. The workflow's own automatic token is read-only against
+      # public data and needs no repo secret to be configured.
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      # Deliberately absent: OPENAI_API_KEY, ANTHROPIC_API_KEY. The e2e
+      # suite is specifically designed to assert the graceful inline error
+      # both produce when unset (Days 19-37) rather than require either
+      # provider - matching this task's "no paid API access" requirement
+      # without weakening any assertion.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # tests-e2e/python-bin.ts (Day 44) resolves this same .venv/bin/python
+      # path on Linux - global-setup.ts and seed.ts shell out to it directly
+      # rather than assuming `python`/`python3` on PATH, matching how a
+      # contributor's own local run works per the README.
+      - name: Create backend virtualenv
+        working-directory: backend
+        run: python -m venv .venv
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Apply database migrations
+        working-directory: backend
+        run: .venv/bin/alembic upgrade head
+
+      - name: Wait for Qdrant
+        run: |
+          for i in $(seq 1 20); do
+            curl -sf http://localhost:6333/collections && exit 0
+            sleep 1
+          done
+          echo "Qdrant did not become ready in time" >&2
+          exit 1
+
+      # No --pool=solo here (README's Windows-only workaround for the lack
+      # of os.fork() - Day 34) - the default "prefork" pool works as-is on
+      # this Linux runner.
+      - name: Start Celery worker
+        working-directory: backend
+        run: |
+          .venv/bin/celery -A app.core.celery_app worker --loglevel=info &
+          for i in $(seq 1 15); do
+            .venv/bin/celery -A app.core.celery_app inspect ping -t 2 >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "Celery worker did not become ready in time" >&2
+          exit 1
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright e2e suite
+        working-directory: frontend
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7

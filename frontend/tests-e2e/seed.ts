@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { BACKEND_DIR, PYTHON_BIN } from "./python-bin";
 
 // Shells out to the backend's own venv Python to seed data directly via
 // its models, the same technique global-setup.ts already uses for
@@ -13,8 +14,6 @@ import path from "node:path";
 // agent's file-only tools). Real ingestion also rolls back and persists
 // zero files on any failure (Day 23's finding), which would make tests
 // relying on it for file/chunk setup flaky by construction.
-const BACKEND_DIR = path.resolve(__dirname, "../../backend");
-const PYTHON_BIN = path.join(BACKEND_DIR, ".venv", "Scripts", "python.exe");
 
 export type SeedFile = { path: string; content: string; language?: string };
 

@@ -1,5 +1,7 @@
 # RepoMind AI
 
+[![CI](https://github.com/veeranagoudam551/repomind-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/veeranagoudam551/repomind-ai/actions/workflows/ci.yml)
+
 **AI-Powered Codebase Intelligence & Software Engineering Assistant**
 
 RepoMind AI lets a developer connect a GitHub repository and use AI to
@@ -253,3 +255,27 @@ db>_test`), created automatically on first run; each test gets a
 freshly recreated schema. GitHub API calls and background ingestion
 are stubbed out, so the suite needs no network access and never
 touches your dev database.
+
+## Continuous Integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push
+and pull request against `main`, as three jobs:
+
+- **Backend tests** — the pytest suite above, against a Postgres service
+  container. No API keys needed: every external call (OpenAI, Anthropic,
+  GitHub, Qdrant, Celery) is mocked per-test, the same as running it
+  locally.
+- **Frontend typecheck & lint** — `next typegen`, `tsc --noEmit`,
+  `eslint .`.
+- **End-to-end tests** — the full Playwright suite (see below) against
+  Postgres, Redis, and Qdrant service containers plus a real Celery
+  worker, all on the runner itself. `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`
+  are deliberately left unset — the suite already asserts the graceful
+  inline error both produce when missing (Days 19-37), so it needs no
+  paid API access to pass. `GITHUB_TOKEN` is the workflow's own automatic
+  token, used only to raise the unauthenticated GitHub API rate limit;
+  no repo secret needs to be configured.
+
+The e2e job depends on the other two, so an obviously broken push fails
+fast without also paying for browser install + three services. On
+failure, the Playwright HTML report is uploaded as a build artifact.
