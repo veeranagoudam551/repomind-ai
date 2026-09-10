@@ -960,6 +960,143 @@ async def test_agent_calls_explain_file_tool_then_finishes(client, db_session, m
     assert body["answer"] == "app/main.py defines the FastAPI app factory."
 
 
+async def test_agent_calls_review_file_tool_then_finishes(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "agent7@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    calls = {"count": 0}
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return json.dumps(
+                {"action": "tool", "tool": "review_file", "arguments": {"file_path": "app/main.py"}}
+            )
+        if calls["count"] == 2:
+            return "No issues found; the file is small and clean."
+        return json.dumps({"action": "finish", "answer": "app/main.py looks clean."})
+
+    monkeypatch.setattr("app.services.agent.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent",
+        json={"goal": "review app/main.py"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["steps"]) == 1
+    assert body["steps"][0]["tool"] == "review_file"
+    assert body["steps"][0]["summary"] == "No issues found; the file is small and clean."
+    assert body["answer"] == "app/main.py looks clean."
+
+
+async def test_agent_calls_debug_tool_then_finishes(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "agent8@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    calls = {"count": 0}
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return json.dumps(
+                {
+                    "action": "tool",
+                    "tool": "debug",
+                    "arguments": {"description": "startup crashes with AttributeError"},
+                }
+            )
+        if calls["count"] == 2:
+            return "The crash happens because create_app() returns None."
+        return json.dumps(
+            {"action": "finish", "answer": "create_app() in app/main.py returns None."}
+        )
+
+    async def _fake_embed(text):
+        return [0.1, 0.2]
+
+    async def _fake_search(vector, repository_id, limit=10):
+        return [{"id": str(chunk.id), "score": 0.9, "payload": {"code_chunk_id": str(chunk.id)}}]
+
+    monkeypatch.setattr("app.services.agent.generate_response", _fake_generate_response)
+    monkeypatch.setattr("app.services.agent.generate_embedding", _fake_embed)
+    monkeypatch.setattr("app.services.agent.vector_store.search", _fake_search)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent",
+        json={"goal": "debug the startup crash"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["steps"]) == 1
+    assert body["steps"][0]["tool"] == "debug"
+    assert body["steps"][0]["summary"] == "The crash happens because create_app() returns None."
+    assert body["answer"] == "create_app() in app/main.py returns None."
+
+
+async def test_agent_calls_architecture_tool_then_finishes(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "agent9@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    calls = {"count": 0}
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return json.dumps({"action": "tool", "tool": "architecture", "arguments": {}})
+        if calls["count"] == 2:
+            assert "app/main.py" in user_message
+            return "This is a small FastAPI application."
+        return json.dumps({"action": "finish", "answer": "It's a small FastAPI application."})
+
+    monkeypatch.setattr("app.services.agent.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent",
+        json={"goal": "summarize the architecture"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["steps"]) == 1
+    assert body["steps"][0]["tool"] == "architecture"
+    assert body["steps"][0]["summary"] == "This is a small FastAPI application."
+    assert body["answer"] == "It's a small FastAPI application."
+
+
+async def test_agent_calls_security_scan_tool_then_finishes(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "agent10@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    calls = {"count": 0}
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return json.dumps({"action": "tool", "tool": "security_scan", "arguments": {}})
+        return json.dumps({"action": "finish", "answer": "No security issues found."})
+
+    monkeypatch.setattr("app.services.agent.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent",
+        json={"goal": "check for security issues"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    # security_scan needs no LLM/embedding call at all, so this is only 2
+    # generate_response calls total (plan -> tool -> plan -> finish), not 3
+    # like the other tools that make their own internal LLM call.
+    assert calls["count"] == 2
+    assert len(body["steps"]) == 1
+    assert body["steps"][0]["tool"] == "security_scan"
+    assert body["steps"][0]["summary"] == "security_scan found no issues."
+    assert body["answer"] == "No security issues found."
+
+
 async def test_agent_forces_finish_after_max_tool_calls(client, db_session, monkeypatch):
     headers = await register_and_login(client, "agent4@example.com")
     repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
