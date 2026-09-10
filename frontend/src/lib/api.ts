@@ -238,3 +238,19 @@ export function explainRepositoryFile(
     { method: "POST", headers: authHeaders(token) }
   );
 }
+
+export type ReviewFileResult = {
+  file_path: string;
+  review: string;
+};
+
+export function reviewRepositoryFile(
+  token: string,
+  repositoryId: string,
+  fileId: string
+): Promise<ReviewFileResult> {
+  return request<ReviewFileResult>(
+    `/repositories/${repositoryId}/files/${fileId}/review`,
+    { method: "POST", headers: authHeaders(token) }
+  );
+}

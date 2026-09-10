@@ -1,6 +1,14 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ArrowLeft, MessageSquare, RefreshCw, Sparkles, SearchIcon, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  ClipboardCheck,
+  MessageSquare,
+  RefreshCw,
+  Sparkles,
+  SearchIcon,
+  Trash2,
+} from "lucide-react";
 import { deleteRepositoryAndRedirect, reindexRepositoryAction } from "@/app/actions/repositories";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -196,14 +204,23 @@ export default async function RepositoryDetailPage(props: PageProps<"/dashboard/
                       <td className="px-3 py-2 text-right text-muted-foreground">
                         {formatBytes(file.size_bytes)}
                       </td>
-                      <td className="px-3 py-2 text-right">
-                        <Link
-                          href={`/dashboard/${repository.id}/files/${file.id}/explain`}
-                          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                        >
-                          <Sparkles className="size-3.5" />
-                          Explain
-                        </Link>
+                      <td className="px-3 py-2">
+                        <div className="flex justify-end gap-3">
+                          <Link
+                            href={`/dashboard/${repository.id}/files/${file.id}/explain`}
+                            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                          >
+                            <Sparkles className="size-3.5" />
+                            Explain
+                          </Link>
+                          <Link
+                            href={`/dashboard/${repository.id}/files/${file.id}/review`}
+                            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                          >
+                            <ClipboardCheck className="size-3.5" />
+                            Review
+                          </Link>
+                        </div>
                       </td>
                     </tr>
                   ))}
