@@ -17,6 +17,17 @@ async function registerAndLogin(page: Page, email: string): Promise<void> {
 // Rather than assume one outcome, wait for whichever terminal status
 // actually happens and assert the right thing for it, so this test tells
 // the truth about the environment it's running in instead of timing out.
+//
+// Day 38 added a third real outcome: if the Celery broker (Redis) itself
+// is unreachable, create/reindex now fail fast into "failed" with a
+// distinct message *before* ingestion (and the OpenAI step) ever runs,
+// rather than hanging the request indefinitely — which is exactly what
+// this test used to do in that environment (see Day 37's note). Match
+// all three known terminal-failure messages instead of assuming any one
+// of embedding-provider state or broker reachability.
+const INGESTION_FAILURE_PATTERN =
+  /OPENAI_API_KEY is not configured|insufficient_quota|background worker is unreachable/;
+
 async function waitForIngestionOutcome(page: Page): Promise<"completed" | "failed"> {
   let status: "completed" | "failed" | undefined;
   await expect(async () => {
@@ -32,7 +43,7 @@ async function assertIngestionOutcome(page: Page, status: "completed" | "failed"
   if (status === "completed") {
     await expect(page.getByText("README")).toBeVisible();
   } else {
-    await expect(page.getByText(/OPENAI_API_KEY/)).toBeVisible();
+    await expect(page.getByText(INGESTION_FAILURE_PATTERN)).toBeVisible();
   }
 }
 
@@ -49,7 +60,11 @@ test.describe("repository management", () => {
     await page.getByRole("button", { name: "Add repository" }).click();
 
     const repoLink = page.getByRole("link", { name: "octocat/Hello-World" });
-    await expect(repoLink).toBeVisible();
+    // Day 38: if the broker is unreachable, POST /repositories itself now
+    // takes a bounded but real ~5-10s (broker socket timeouts) rather than
+    // hanging, which can exceed Playwright's default 5s assertion timeout
+    // even though the request no longer hangs indefinitely.
+    await expect(repoLink).toBeVisible({ timeout: 15_000 });
 
     await repoLink.click();
     await expect(page).toHaveURL(/\/dashboard\/[0-9a-f-]{36}$/);

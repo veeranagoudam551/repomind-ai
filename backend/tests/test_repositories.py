@@ -238,6 +238,35 @@ async def test_delete_repository_cleans_up_vector_store(client, monkeypatch):
     assert calls == [repo_id]
 
 
+async def test_delete_repository_vector_store_error_returns_502(client, monkeypatch):
+    # Day 39: found live in e2e with a real, unreachable Qdrant - this
+    # endpoint was the one Qdrant-touching route in the app not catching
+    # VectorStoreError, so a Qdrant failure surfaced as an unhandled 500
+    # instead of the same graceful 502 every other such endpoint returns.
+    headers = await register_and_login(client, "vectorerror@example.com")
+    _mock_fetch(monkeypatch, result=make_repo_info())
+
+    created = await client.post(
+        "/repositories", json={"github_url": "octocat/Hello-World"}, headers=headers
+    )
+    repo_id = created.json()["id"]
+
+    from app.services.vector_store import VectorStoreError
+
+    async def _boom(repository_id):
+        raise VectorStoreError("Qdrant unreachable")
+
+    monkeypatch.setattr("app.api.repositories.vector_store.delete_by_repository", _boom)
+
+    response = await client.delete(f"/repositories/{repo_id}", headers=headers)
+    assert response.status_code == 502
+
+    # The repository row must survive a failed Qdrant delete - retryable,
+    # not orphaned - same guarantee the existing code comment promises.
+    get_response = await client.get(f"/repositories/{repo_id}", headers=headers)
+    assert get_response.status_code == 200
+
+
 async def test_delete_repository_not_found_for_other_user(client, monkeypatch):
     headers_a = await register_and_login(client, "deleterowner@example.com")
     headers_b = await register_and_login(client, "deleterintruder@example.com")

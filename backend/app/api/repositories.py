@@ -215,8 +215,13 @@ async def delete_repository(
     repository = await _get_owned_repository(repository_id, db, current_user)
     # Delete Qdrant vectors before the Postgres row: if this fails, the
     # repository stays around (and deletable again) rather than leaving
-    # orphaned vectors with no code_chunks row left to point at them.
-    await vector_store.delete_by_repository(repository.id)
+    # orphaned vectors with no code_chunks row left to point at them. A
+    # VectorStoreError maps to 502 like every other Qdrant-touching
+    # endpoint (search/debug) - this one just didn't catch it (Day 39).
+    try:
+        await vector_store.delete_by_repository(repository.id)
+    except VectorStoreError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
     await db.delete(repository)
     await db.commit()
 
