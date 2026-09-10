@@ -25,6 +25,19 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="UTC",
     enable_utc=True,
+    # Day 38: bound how long a blocked/unreachable broker can stall a
+    # `.delay()` call. Without these, an unreachable (as opposed to
+    # actively refused) Redis port can leave the connect() syscall itself
+    # hanging for the OS's own TCP timeout - tens of seconds - and the
+    # caller (a FastAPI request handler) blocks the whole time. These
+    # timeouts don't make `.delay()` non-blocking, just bound the wait;
+    # app/api/repositories.py still wraps every call so a failure - fast
+    # or eventually-timed-out - never hangs or 500s the request.
+    broker_connection_timeout=5,
+    broker_transport_options={
+        "socket_connect_timeout": 5,
+        "socket_timeout": 5,
+    },
 )
 
 # Importing app.tasks registers its @celery_app.task-decorated functions.

@@ -103,6 +103,27 @@ async def test_create_repository_rejects_duplicate(client, monkeypatch):
     assert second.status_code == 400
 
 
+async def test_create_repository_fails_fast_when_queueing_fails(client, monkeypatch):
+    # Day 38: a broker that's unreachable/erroring shouldn't hang or 500 the
+    # request - the repository should land in a terminal `failed` state with
+    # a clear message instead, same as any other ingestion failure.
+    headers = await register_and_login(client, "queuefailure@example.com")
+    _mock_fetch(monkeypatch, result=make_repo_info())
+
+    def _boom(repository_id):
+        raise ConnectionError("could not connect to broker")
+
+    monkeypatch.setattr("app.api.repositories.ingest_repository_task.delay", _boom)
+
+    response = await client.post(
+        "/repositories", json={"github_url": "octocat/Hello-World"}, headers=headers
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "failed"
+    assert "background worker" in body["error_message"]
+
+
 async def test_list_repositories_only_shows_own(client, monkeypatch):
     headers_a = await register_and_login(client, "usera@example.com")
     headers_b = await register_and_login(client, "userb@example.com")
@@ -280,6 +301,32 @@ async def test_reindex_triggers_background_ingestion(client, db_session, monkeyp
     assert body["status"] == "pending"
     assert body["error_message"] is None
     assert calls == [str(repo_id)]
+
+
+async def test_reindex_fails_fast_when_queueing_fails(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "reindexqueuefailure@example.com")
+    _mock_fetch(monkeypatch, result=make_repo_info())
+
+    created = await client.post(
+        "/repositories", json={"github_url": "octocat/Hello-World"}, headers=headers
+    )
+    repo_id = uuid.UUID(created.json()["id"])
+
+    repo = await db_session.get(Repository, repo_id)
+    repo.status = RepositoryStatus.FAILED
+    repo.error_message = "boom"
+    await db_session.commit()
+
+    def _boom(repository_id):
+        raise ConnectionError("could not connect to broker")
+
+    monkeypatch.setattr("app.api.repositories.ingest_repository_task.delay", _boom)
+
+    response = await client.post(f"/repositories/{repo_id}/reindex", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert "background worker" in body["error_message"]
 
 
 async def test_reindex_not_found_for_other_user(client, monkeypatch):

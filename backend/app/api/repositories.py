@@ -69,6 +69,30 @@ DEBUG_NO_CONTEXT_MESSAGE = (
     "nothing in it relates to the error described."
 )
 
+QUEUE_INGESTION_ERROR_MESSAGE = (
+    "Could not queue ingestion: the background worker is unreachable"
+)
+
+
+async def _queue_ingestion(repository: Repository, db: AsyncSession) -> Repository:
+    # Day 38: queuing the Celery task can itself fail or block (see
+    # celery_app.py) if Redis is unreachable. Broad except is deliberate -
+    # the broker transport raises different exception types depending on
+    # the failure mode (e.g. redis.exceptions.ConnectionError/TimeoutError,
+    # kombu.exceptions.OperationalError) and the point is that none of them
+    # should hang or 500 this request. Instead, fail the repository the
+    # same way any other ingestion failure does, so the existing
+    # `status: "failed"` handling (frontend included) covers this for free.
+    try:
+        ingest_repository_task.delay(str(repository.id))
+    except Exception:
+        repository.status = RepositoryStatus.FAILED
+        repository.error_message = QUEUE_INGESTION_ERROR_MESSAGE
+        await db.commit()
+        await db.refresh(repository)
+    return repository
+
+
 ARCHITECTURE_SYSTEM_PROMPT = (
     "You are a software architect giving a newcomer a high-level overview "
     "of a repository. You are given its full file tree (paths and "
@@ -144,9 +168,7 @@ async def create_repository(
     await db.commit()
     await db.refresh(repository)
 
-    ingest_repository_task.delay(str(repository.id))
-
-    return repository
+    return await _queue_ingestion(repository, db)
 
 
 @router.get("", response_model=list[RepositoryRead])
@@ -235,8 +257,7 @@ async def reindex_repository(
         )
 
     repository = await db.get(Repository, updated_id)
-    ingest_repository_task.delay(str(repository.id))
-    return repository
+    return await _queue_ingestion(repository, db)
 
 
 @router.get("/{repository_id}/files", response_model=list[RepositoryFileRead])
