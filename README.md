@@ -202,8 +202,11 @@ JWT), `GET /auth/me` (requires `Authorization: Bearer <token>`).
 Repository endpoints (require `Authorization: Bearer <token>`):
 `POST /repositories` (body: `{"github_url": "owner/repo"}`, validates
 the repo via the GitHub API, creates a `pending` row, and kicks off
-background ingestion), `GET /repositories` (lists your own
-repositories), `GET /repositories/{id}` (single repository, with live
+background ingestion), `GET /repositories` (paginated list of your own
+repositories, newest first — optional `?page=`/`?page_size=`, default
+`page=1`/`page_size=10`, max `page_size` 100; returns
+`{items, page, page_size, total, total_pages, has_next, has_previous}`),
+`GET /repositories/{id}` (single repository, with live
 `status`), `DELETE /repositories/{id}` (removes it, cascading to its
 files/chunks), `POST /repositories/{id}/reindex` (re-runs ingestion;
 `409` if one is already in progress for that repo),

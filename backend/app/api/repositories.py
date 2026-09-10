@@ -1,8 +1,9 @@
+import math
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, update
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -24,6 +25,7 @@ from app.schemas.repository import (
     ExplainFileResponse,
     RepositoryCreate,
     RepositoryFileRead,
+    RepositoryPage,
     RepositoryRead,
     RepositorySearchRequest,
     ReviewFileResponse,
@@ -49,6 +51,9 @@ from app.tasks import ingest_repository_task
 _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 router = APIRouter(prefix="/repositories", tags=["repositories"])
+
+DEFAULT_REPOSITORY_PAGE_SIZE = 10
+MAX_REPOSITORY_PAGE_SIZE = 100
 
 DEBUG_SEARCH_LIMIT = 5
 
@@ -171,17 +176,41 @@ async def create_repository(
     return await _queue_ingestion(repository, db)
 
 
-@router.get("", response_model=list[RepositoryRead])
+@router.get("", response_model=RepositoryPage)
 async def list_repositories(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_REPOSITORY_PAGE_SIZE, ge=1, le=MAX_REPOSITORY_PAGE_SIZE),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    owner_filter = Repository.owner_id == current_user.id
+
+    total = await db.scalar(
+        select(func.count()).select_from(Repository).where(owner_filter)
+    )
+
     result = await db.scalars(
         select(Repository)
-        .where(Repository.owner_id == current_user.id)
+        .where(owner_filter)
         .order_by(Repository.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     )
-    return result.all()
+
+    # A page past the end of the results isn't an error - e.g. the last
+    # repository on page 2 just got deleted - it's just an empty page, same
+    # as any other query that happens to match nothing.
+    total_pages = math.ceil(total / page_size) if total else 0
+
+    return RepositoryPage(
+        items=result.all(),
+        page=page,
+        page_size=page_size,
+        total=total,
+        total_pages=total_pages,
+        has_next=page < total_pages,
+        has_previous=page > 1,
+    )
 
 
 async def _get_owned_repository(

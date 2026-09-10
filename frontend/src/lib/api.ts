@@ -110,8 +110,27 @@ export function getCurrentUser(token: string): Promise<User> {
   return request<User>("/auth/me", { headers: authHeaders(token) });
 }
 
-export function listRepositories(token: string): Promise<Repository[]> {
-  return request<Repository[]>("/repositories", { headers: authHeaders(token) });
+export type RepositoryPage = {
+  items: Repository[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+};
+
+export function listRepositories(
+  token: string,
+  options?: { page?: number; pageSize?: number }
+): Promise<RepositoryPage> {
+  const params = new URLSearchParams();
+  if (options?.page) params.set("page", String(options.page));
+  if (options?.pageSize) params.set("page_size", String(options.pageSize));
+  const query = params.toString();
+  return request<RepositoryPage>(`/repositories${query ? `?${query}` : ""}`, {
+    headers: authHeaders(token),
+  });
 }
 
 export function createRepository(token: string, githubUrl: string): Promise<Repository> {

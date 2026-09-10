@@ -27,6 +27,19 @@ class RepositoryRead(BaseModel):
     updated_at: datetime
 
 
+class RepositoryPage(BaseModel):
+    """A paginated slice of GET /repositories, plus enough metadata for the
+    caller to render prev/next controls without a second request."""
+
+    items: list[RepositoryRead]
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
+
+
 class RepositoryFileRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

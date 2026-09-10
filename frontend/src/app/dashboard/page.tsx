@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { FolderGit, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, FolderGit, Trash2 } from "lucide-react";
 import { AddRepositoryForm } from "@/components/add-repository-form";
 import { removeRepository } from "@/app/actions/repositories";
 import { Badge } from "@/components/ui/badge";
@@ -12,7 +12,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { ApiError, getCurrentUser, listRepositories, type RepositoryStatus } from "@/lib/api";
+import {
+  ApiError,
+  getCurrentUser,
+  listRepositories,
+  type Repository,
+  type RepositoryStatus,
+} from "@/lib/api";
 import { deleteSession, getSessionToken } from "@/lib/session";
 
 const STATUS_VARIANT: Record<RepositoryStatus, "secondary" | "default" | "destructive"> = {
@@ -23,20 +29,39 @@ const STATUS_VARIANT: Record<RepositoryStatus, "secondary" | "default" | "destru
   failed: "destructive",
 };
 
-export default async function DashboardPage() {
+function parsePage(raw: string | undefined): number {
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+export default async function DashboardPage(props: PageProps<"/dashboard">) {
+  const { page: pageParam } = await props.searchParams;
+  const requestedPage = parsePage(typeof pageParam === "string" ? pageParam : undefined);
+
   const token = await getSessionToken();
   if (!token) {
     redirect("/login");
   }
 
   let userEmail: string | null = null;
-  let repositories: Awaited<ReturnType<typeof listRepositories>> = [];
+  let repositories: Repository[] = [];
+  let total = 0;
+  let totalPages = 0;
+  let hasNext = false;
+  let hasPrevious = false;
   let loadError: string | null = null;
 
   try {
-    const [user, repos] = await Promise.all([getCurrentUser(token), listRepositories(token)]);
+    const [user, repoPage] = await Promise.all([
+      getCurrentUser(token),
+      listRepositories(token, { page: requestedPage }),
+    ]);
     userEmail = user.email;
-    repositories = repos;
+    repositories = repoPage.items;
+    total = repoPage.total;
+    totalPages = repoPage.total_pages;
+    hasNext = repoPage.has_next;
+    hasPrevious = repoPage.has_previous;
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
       await deleteSession();
@@ -44,6 +69,13 @@ export default async function DashboardPage() {
     }
     loadError = "Couldn't reach the RepoMind AI API. Is the backend running?";
   }
+
+  // A page beyond the last one (e.g. a bookmarked link, or the last
+  // repository on it got deleted) isn't an error - the backend returns an
+  // empty items list for it - but "No repositories yet" would be
+  // misleading here since the user does have repositories, just not on
+  // this page.
+  const isPastLastPage = repositories.length === 0 && total > 0;
 
   return (
     <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-10 sm:px-6">
@@ -66,8 +98,18 @@ export default async function DashboardPage() {
 
       {loadError && <p className="mb-4 text-sm text-destructive">{loadError}</p>}
 
-      {!loadError && repositories.length === 0 && (
+      {!loadError && repositories.length === 0 && !isPastLastPage && (
         <p className="text-sm text-muted-foreground">No repositories yet — add one above.</p>
+      )}
+
+      {!loadError && isPastLastPage && (
+        <p className="text-sm text-muted-foreground">
+          Nothing on page {requestedPage}.{" "}
+          <Link href="/dashboard" className="underline underline-offset-4">
+            Back to page 1
+          </Link>
+          .
+        </p>
       )}
 
       {repositories.length > 0 && (
@@ -99,6 +141,42 @@ export default async function DashboardPage() {
               </CardContent>
             </Card>
           ))}
+        </div>
+      )}
+
+      {!loadError && totalPages > 1 && (
+        <div className="mt-6 flex items-center justify-between gap-2">
+          {hasPrevious ? (
+            <Button asChild variant="outline" size="sm">
+              <Link href={requestedPage - 1 === 1 ? "/dashboard" : `/dashboard?page=${requestedPage - 1}`}>
+                <ChevronLeft />
+                Previous
+              </Link>
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" disabled>
+              <ChevronLeft />
+              Previous
+            </Button>
+          )}
+
+          <span className="text-sm text-muted-foreground">
+            Page {requestedPage} of {totalPages}
+          </span>
+
+          {hasNext ? (
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/dashboard?page=${requestedPage + 1}`}>
+                Next
+                <ChevronRight />
+              </Link>
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" disabled>
+              Next
+              <ChevronRight />
+            </Button>
+          )}
         </div>
       )}
     </main>

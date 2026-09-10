@@ -134,8 +134,134 @@ async def test_list_repositories_only_shows_own(client, monkeypatch):
     response_a = await client.get("/repositories", headers=headers_a)
     response_b = await client.get("/repositories", headers=headers_b)
 
-    assert len(response_a.json()) == 1
-    assert response_b.json() == []
+    # Day 45: GET /repositories now returns a paginated envelope, not a
+    # bare array - see the test_list_repositories_pagination_* tests below
+    # for the pagination behavior itself.
+    assert len(response_a.json()["items"]) == 1
+    assert response_a.json()["total"] == 1
+    assert response_b.json()["items"] == []
+    assert response_b.json()["total"] == 0
+
+
+async def _create_numbered_repositories(client, headers, monkeypatch, count: int) -> list[str]:
+    """Creates `count` distinct repositories for the given user (distinct
+    github_urls, since (owner_id, github_url) is unique) and returns their
+    ids in creation order."""
+
+    async def _fetch(owner, repo):
+        return make_repo_info(
+            full_name=f"{owner}/{repo}", html_url=f"https://github.com/{owner}/{repo}"
+        )
+
+    monkeypatch.setattr("app.api.repositories.fetch_repository", _fetch)
+
+    ids = []
+    for i in range(count):
+        response = await client.post(
+            "/repositories", json={"github_url": f"pageowner/repo-{i}"}, headers=headers
+        )
+        assert response.status_code == 201
+        ids.append(response.json()["id"])
+    return ids
+
+
+async def test_list_repositories_pagination_first_page(client, monkeypatch):
+    headers = await register_and_login(client, "paginator1@example.com")
+    await _create_numbered_repositories(client, headers, monkeypatch, 5)
+
+    response = await client.get("/repositories?page_size=2", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["page"] == 1
+    assert body["page_size"] == 2
+    assert body["total"] == 5
+    assert body["total_pages"] == 3
+    assert body["has_next"] is True
+    assert body["has_previous"] is False
+    assert len(body["items"]) == 2
+
+
+async def test_list_repositories_pagination_default_page_size(client, monkeypatch):
+    # Confirms the sensible bounded default (10) applies with no page/
+    # page_size params at all, matching "unchanged for the default request".
+    headers = await register_and_login(client, "paginator2@example.com")
+    await _create_numbered_repositories(client, headers, monkeypatch, 12)
+
+    response = await client.get("/repositories", headers=headers)
+    body = response.json()
+    assert body["page"] == 1
+    assert body["page_size"] == 10
+    assert body["total"] == 12
+    assert body["total_pages"] == 2
+    assert len(body["items"]) == 10
+
+
+async def test_list_repositories_pagination_later_page(client, monkeypatch):
+    headers = await register_and_login(client, "paginator3@example.com")
+    created_ids = await _create_numbered_repositories(client, headers, monkeypatch, 5)
+
+    page1 = (await client.get("/repositories?page_size=2&page=1", headers=headers)).json()
+    page2 = (await client.get("/repositories?page_size=2&page=2", headers=headers)).json()
+    page3 = (await client.get("/repositories?page_size=2&page=3", headers=headers)).json()
+
+    assert page2["page"] == 2
+    assert page2["has_next"] is True
+    assert page2["has_previous"] is True
+    assert len(page2["items"]) == 2
+
+    assert page3["has_next"] is False
+    assert page3["has_previous"] is True
+    assert len(page3["items"]) == 1
+
+    # Every repository appears on exactly one page - none skipped, none
+    # duplicated across the offset/limit boundaries.
+    seen_ids = [item["id"] for page in (page1, page2, page3) for item in page["items"]]
+    assert sorted(seen_ids) == sorted(created_ids)
+    assert len(seen_ids) == len(set(seen_ids))
+
+
+async def test_list_repositories_pagination_empty_page_past_the_end(client, monkeypatch):
+    headers = await register_and_login(client, "paginator4@example.com")
+    await _create_numbered_repositories(client, headers, monkeypatch, 3)
+
+    # Not an error - a page number beyond the last one just has nothing on
+    # it (e.g. the last repository on it was deleted since the link was
+    # bookmarked), same as any other query matching zero rows.
+    response = await client.get("/repositories?page_size=2&page=5", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"] == []
+    assert body["page"] == 5
+    assert body["total"] == 3
+    assert body["total_pages"] == 2
+    assert body["has_next"] is False
+    assert body["has_previous"] is True
+
+
+async def test_list_repositories_pagination_empty_for_user_with_no_repositories(client):
+    headers = await register_and_login(client, "paginator5@example.com")
+
+    response = await client.get("/repositories", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [],
+        "page": 1,
+        "page_size": 10,
+        "total": 0,
+        "total_pages": 0,
+        "has_next": False,
+        "has_previous": False,
+    }
+
+
+async def test_list_repositories_rejects_invalid_page_params(client, monkeypatch):
+    headers = await register_and_login(client, "paginator6@example.com")
+    await _create_numbered_repositories(client, headers, monkeypatch, 1)
+
+    assert (await client.get("/repositories?page=0", headers=headers)).status_code == 422
+    assert (await client.get("/repositories?page=-1", headers=headers)).status_code == 422
+    assert (await client.get("/repositories?page_size=0", headers=headers)).status_code == 422
+    assert (await client.get("/repositories?page_size=101", headers=headers)).status_code == 422
 
 
 async def test_get_repository_not_found_for_other_user(client, monkeypatch):
