@@ -24,6 +24,8 @@ from app.schemas.repository import (
     RepositoryRead,
     RepositorySearchRequest,
     ReviewFileResponse,
+    SecurityFindingRead,
+    SecurityScanResponse,
 )
 from app.services import vector_store
 from app.services.code_chunking import reconstruct_file_content
@@ -37,7 +39,10 @@ from app.services.github import (
 )
 from app.services.llm import LLMAPIError, LLMConfigError, generate_response
 from app.services.repository_ingestion import ingest_repository
+from app.services.security_scan import scan_content
 from app.services.vector_store import VectorStoreError
+
+_SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
 router = APIRouter(prefix="/repositories", tags=["repositories"])
 
@@ -520,3 +525,56 @@ async def analyze_repository_architecture(
         file_count=len(files),
         readme_path=readme_file.file_path if readme_file else None,
     )
+
+
+@router.post("/{repository_id}/security-scan", response_model=SecurityScanResponse)
+async def scan_repository_security(
+    repository_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repository(repository_id, db, current_user)
+
+    files = (
+        await db.scalars(
+            select(RepositoryFile)
+            .where(RepositoryFile.repository_id == repository_id)
+            .order_by(RepositoryFile.file_path)
+        )
+    ).all()
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No files available to scan for this repository",
+        )
+
+    findings: list[SecurityFindingRead] = []
+    files_scanned = 0
+    for repository_file in files:
+        chunks = (
+            await db.scalars(
+                select(CodeChunk)
+                .where(CodeChunk.repository_file_id == repository_file.id)
+                .order_by(CodeChunk.chunk_index)
+            )
+        ).all()
+        if not chunks:
+            continue
+
+        files_scanned += 1
+        content = reconstruct_file_content(chunks)
+        for finding in scan_content(content):
+            findings.append(
+                SecurityFindingRead(
+                    file_path=repository_file.file_path,
+                    line=finding.line,
+                    rule_id=finding.rule_id,
+                    severity=finding.severity,
+                    message=finding.message,
+                    snippet=finding.snippet,
+                )
+            )
+
+    findings.sort(key=lambda f: (_SEVERITY_ORDER.get(f.severity, 3), f.file_path, f.line))
+
+    return SecurityScanResponse(findings=findings, files_scanned=files_scanned)

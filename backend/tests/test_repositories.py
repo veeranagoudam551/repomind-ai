@@ -790,3 +790,72 @@ async def test_architecture_maps_llm_config_error_to_503(client, db_session, mon
 
     response = await client.post(f"/repositories/{repo_id}/architecture", headers=headers)
     assert response.status_code == 503
+
+
+async def test_security_scan_requires_auth(client):
+    response = await client.post(
+        "/repositories/00000000-0000-0000-0000-000000000000/security-scan"
+    )
+    assert response.status_code == 401
+
+
+async def test_security_scan_detects_findings(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "scanner1@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    unsafe_file = RepositoryFile(repository_id=repo_id, file_path="app/config.py", size_bytes=40)
+    db_session.add(unsafe_file)
+    await db_session.commit()
+    await db_session.refresh(unsafe_file)
+    unsafe_chunk = CodeChunk(
+        repository_id=repo_id,
+        repository_file_id=unsafe_file.id,
+        chunk_index=0,
+        content="password = 'supersecretpass123'\nresult = eval(user_input)\n",
+        start_line=1,
+        end_line=2,
+    )
+    db_session.add(unsafe_chunk)
+    await db_session.commit()
+
+    response = await client.post(f"/repositories/{repo_id}/security-scan", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["files_scanned"] == 2
+    rule_ids = {f["rule_id"] for f in body["findings"] if f["file_path"] == "app/config.py"}
+    assert rule_ids == {"hardcoded-secret", "eval-exec"}
+    # app/main.py's "def create_app(): ..." from _make_searchable_repository
+    # is clean, so it shouldn't contribute any findings.
+    assert all(f["file_path"] != "app/main.py" for f in body["findings"])
+
+
+async def test_security_scan_returns_empty_for_clean_repository(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "scanner2@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    response = await client.post(f"/repositories/{repo_id}/security-scan", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["findings"] == []
+    assert body["files_scanned"] == 1
+
+
+async def test_security_scan_not_found_for_other_user(client, db_session, monkeypatch):
+    headers_a = await register_and_login(client, "scanowner@example.com")
+    headers_b = await register_and_login(client, "scanintruder@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers_a)
+
+    response = await client.post(f"/repositories/{repo_id}/security-scan", headers=headers_b)
+    assert response.status_code == 404
+
+
+async def test_security_scan_rejects_when_no_files(client, monkeypatch):
+    headers = await register_and_login(client, "scanner3@example.com")
+    _mock_fetch(monkeypatch, result=make_repo_info())
+    created = await client.post(
+        "/repositories", json={"github_url": "octocat/Hello-World"}, headers=headers
+    )
+    repo_id = created.json()["id"]
+
+    response = await client.post(f"/repositories/{repo_id}/security-scan", headers=headers)
+    assert response.status_code == 400

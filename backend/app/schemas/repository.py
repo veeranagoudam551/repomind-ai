@@ -88,3 +88,17 @@ class ArchitectureAnalysisResponse(BaseModel):
     analysis: str
     file_count: int
     readme_path: Optional[str]
+
+
+class SecurityFindingRead(BaseModel):
+    file_path: str
+    line: int
+    rule_id: str
+    severity: str
+    message: str
+    snippet: str
+
+
+class SecurityScanResponse(BaseModel):
+    findings: list[SecurityFindingRead]
+    files_scanned: int
