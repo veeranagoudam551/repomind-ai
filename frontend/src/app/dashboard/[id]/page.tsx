@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import {
   ArrowLeft,
+  Bug,
   ClipboardCheck,
   MessageSquare,
   RefreshCw,
@@ -153,6 +154,19 @@ export default async function RepositoryDetailPage(props: PageProps<"/dashboard/
               <Button variant="outline" size="sm" disabled>
                 <SearchIcon />
                 Search
+              </Button>
+            )}
+            {repository.status === "completed" ? (
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/dashboard/${repository.id}/debug`}>
+                  <Bug />
+                  Debug
+                </Link>
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" disabled>
+                <Bug />
+                Debug
               </Button>
             )}
             <form action={reindexRepositoryAction.bind(null, repository.id)}>

@@ -254,3 +254,20 @@ export function reviewRepositoryFile(
     { method: "POST", headers: authHeaders(token) }
   );
 }
+
+export type DebugResult = {
+  diagnosis: string;
+  sources: SearchResult[];
+};
+
+export function debugRepository(
+  token: string,
+  repositoryId: string,
+  description: string
+): Promise<DebugResult> {
+  return request<DebugResult>(`/repositories/${repositoryId}/debug`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ description }),
+  });
+}
