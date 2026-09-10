@@ -7,6 +7,7 @@ import {
   MessageSquare,
   Network,
   RefreshCw,
+  ShieldAlert,
   Sparkles,
   SearchIcon,
   Trash2,
@@ -181,6 +182,19 @@ export default async function RepositoryDetailPage(props: PageProps<"/dashboard/
               <Button variant="outline" size="sm" disabled>
                 <Network />
                 Architecture
+              </Button>
+            )}
+            {repository.file_count > 0 ? (
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/dashboard/${repository.id}/security`}>
+                  <ShieldAlert />
+                  Security
+                </Link>
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" disabled>
+                <ShieldAlert />
+                Security
               </Button>
             )}
             <form action={reindexRepositoryAction.bind(null, repository.id)}>

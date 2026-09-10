@@ -287,3 +287,29 @@ export function analyzeRepositoryArchitecture(
     headers: authHeaders(token),
   });
 }
+
+export type SecuritySeverity = "high" | "medium" | "low";
+
+export type SecurityFinding = {
+  file_path: string;
+  line: number;
+  rule_id: string;
+  severity: SecuritySeverity;
+  message: string;
+  snippet: string;
+};
+
+export type SecurityScanResult = {
+  findings: SecurityFinding[];
+  files_scanned: number;
+};
+
+export function scanRepositorySecurity(
+  token: string,
+  repositoryId: string
+): Promise<SecurityScanResult> {
+  return request<SecurityScanResult>(`/repositories/${repositoryId}/security-scan`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
