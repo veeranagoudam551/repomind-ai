@@ -269,17 +269,17 @@ async def test_reindex_triggers_background_ingestion(client, db_session, monkeyp
 
     calls = []
 
-    async def _spy(repository_id):
+    def _spy(repository_id):
         calls.append(repository_id)
 
-    monkeypatch.setattr("app.api.repositories.ingest_repository", _spy)
+    monkeypatch.setattr("app.api.repositories.ingest_repository_task.delay", _spy)
 
     response = await client.post(f"/repositories/{repo_id}/reindex", headers=headers)
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "pending"
     assert body["error_message"] is None
-    assert calls == [repo_id]
+    assert calls == [str(repo_id)]
 
 
 async def test_reindex_not_found_for_other_user(client, monkeypatch):

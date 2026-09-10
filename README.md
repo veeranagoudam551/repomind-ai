@@ -130,6 +130,23 @@ the embedding step and the repository is marked `failed` with that
 error message. Chatting in a conversation additionally requires an
 `ANTHROPIC_API_KEY` — without one, sending a message returns `503`.
 
+Since Day 34, ingestion runs as a Celery task (`app/tasks.py`) instead
+of a FastAPI `BackgroundTasks` job, so `POST /repositories` and
+`POST /repositories/{id}/reindex` need a Redis instance reachable at
+`REDIS_URL` (default `redis://localhost:6379/0`) and a worker process
+running, e.g. `docker run -p 6379:6379 redis` (or, on Windows without
+Docker, WSL's `apt install redis-server` works fine — WSL2 forwards
+`localhost:6379` to Windows automatically):
+
+```bash
+celery -A app.core.celery_app worker --loglevel=info --pool=solo
+```
+
+`--pool=solo` is required on native Windows — Celery's default
+"prefork" pool needs `os.fork()`, which Windows doesn't have. Without a
+running worker, `.delay()` calls still succeed (they just publish to
+Redis), but queued repositories stay `pending` forever until one starts.
+
 Auth endpoints: `POST /auth/register`, `POST /auth/login` (returns a
 JWT), `GET /auth/me` (requires `Authorization: Bearer <token>`).
 

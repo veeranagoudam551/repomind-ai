@@ -4,8 +4,8 @@ Tests run against a real Postgres database (`<DATABASE_URL's db>_test`,
 created automatically if missing) rather than mocks, since the models use
 Postgres-specific column types. Each test gets a freshly recreated schema.
 Network calls to GitHub and the background ingestion pipeline (already
-verified manually in Days 7-8) are stubbed out so the suite is fast and
-deterministic.
+verified manually in Days 7-8, 34) are stubbed out so the suite is fast
+and deterministic.
 """
 
 from __future__ import annotations
@@ -62,10 +62,14 @@ async def test_engine() -> AsyncGenerator:
 
 @pytest.fixture(autouse=True)
 def _stub_ingestion(monkeypatch):
-    async def _noop(repository_id):
+    # Stubs the Celery task's .delay() itself (not the underlying
+    # ingest_repository function - see test_repository_ingestion.py for
+    # that), so these tests need neither a real Redis broker nor a
+    # running worker, same "fast and deterministic" reasoning as always.
+    def _noop(repository_id):
         return None
 
-    monkeypatch.setattr("app.api.repositories.ingest_repository", _noop)
+    monkeypatch.setattr("app.api.repositories.ingest_repository_task.delay", _noop)
 
 
 @pytest.fixture(autouse=True)

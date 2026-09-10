@@ -6,9 +6,11 @@ it to a temp directory, scans the resulting file tree, persists per-file
 metadata to `repository_files`, splits each text file's content into
 `code_chunks`, embeds every chunk (Day 14's `generate_embeddings`), and
 upserts the vectors into Qdrant (Day 15's `vector_store`) - setting each
-`code_chunks.vector_id` once its vector is stored. Runs as a FastAPI
-background task today; will move to a Celery worker once Redis is
-introduced (Day 34).
+`code_chunks.vector_id` once its vector is stored. Runs inside a Celery
+worker (Day 34's `app/tasks.py`) rather than FastAPI's `BackgroundTasks`
+(Days 7-33) - this function itself is unchanged either way, since it
+already opens its own `AsyncSessionLocal` rather than depending on a
+request-scoped session.
 """
 
 from __future__ import annotations

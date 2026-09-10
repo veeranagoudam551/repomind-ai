@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     llm_provider: str = "anthropic"
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"
+    redis_url: str = "redis://localhost:6379/0"
 
     @property
     def cors_origin_list(self) -> list[str]:

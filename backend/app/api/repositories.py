@@ -1,7 +1,7 @@
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,9 +42,9 @@ from app.services.github import (
     parse_github_url,
 )
 from app.services.llm import LLMAPIError, LLMConfigError, generate_response
-from app.services.repository_ingestion import ingest_repository
 from app.services.security_scan import scan_content
 from app.services.vector_store import VectorStoreError
+from app.tasks import ingest_repository_task
 
 _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
@@ -88,7 +88,6 @@ ARCHITECTURE_SYSTEM_PROMPT = (
 @router.post("", response_model=RepositoryRead, status_code=status.HTTP_201_CREATED)
 async def create_repository(
     payload: RepositoryCreate,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -145,7 +144,7 @@ async def create_repository(
     await db.commit()
     await db.refresh(repository)
 
-    background_tasks.add_task(ingest_repository, repository.id)
+    ingest_repository_task.delay(str(repository.id))
 
     return repository
 
@@ -210,7 +209,6 @@ IN_PROGRESS_STATUSES = (
 @router.post("/{repository_id}/reindex", response_model=RepositoryRead)
 async def reindex_repository(
     repository_id: UUID,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -237,7 +235,7 @@ async def reindex_repository(
         )
 
     repository = await db.get(Repository, updated_id)
-    background_tasks.add_task(ingest_repository, repository.id)
+    ingest_repository_task.delay(str(repository.id))
     return repository
 
 
