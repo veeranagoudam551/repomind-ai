@@ -38,12 +38,29 @@ def _make_tarball(files: dict[str, bytes]) -> bytes:
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         root_info = tarfile.TarInfo(name="repo-main")
         root_info.type = tarfile.DIRTYPE
+        # Needs the execute bit or the extracted directory is non-traversable
+        # on Linux (TarInfo() defaults to mode 0o644 regardless of type) -
+        # see test_repository_ingestion.py's _make_tarball for the full
+        # explanation; this is an independent copy of the same helper with
+        # the same bug, caught by the same Day 44 Linux CI run.
+        root_info.mode = 0o755
         tar.addfile(root_info)
         for rel_path, content in files.items():
             info = tarfile.TarInfo(name=f"repo-main/{rel_path}")
             info.size = len(content)
             tar.addfile(info, io.BytesIO(content))
     return buf.getvalue()
+
+
+def test_make_tarball_root_directory_is_traversable():
+    # Same regression test as test_repository_ingestion.py's own - this
+    # file has an independent copy of _make_tarball, so it needs its own
+    # independent guard against the same regression.
+    data = _make_tarball({"README.md": b"hello\n"})
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        root = tar.getmember("repo-main")
+    assert root.isdir()
+    assert root.mode & 0o100, f"root directory mode {oct(root.mode)} is missing the owner execute bit"
 
 
 async def _make_repository(db_session) -> Repository:

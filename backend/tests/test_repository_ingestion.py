@@ -54,12 +54,49 @@ def _make_tarball(files: dict[str, bytes]) -> bytes:
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         root_info = tarfile.TarInfo(name="repo-main")
         root_info.type = tarfile.DIRTYPE
+        # TarInfo() defaults to mode 0o644 regardless of type - fine for a
+        # file, but a directory needs the execute/search bit too (POSIX:
+        # read lets you list a directory's names, execute lets you actually
+        # enter it) or it's non-traversable once extracted. os.walk() then
+        # silently finds nothing (its default onerror swallows the
+        # PermissionError on the very first scandir), so _scan_files()
+        # returns zero files with no error at all - passed unnoticed on
+        # Windows, which doesn't enforce this POSIX permission model, until
+        # Day 44's Linux CI run actually caught it (0 chunks embedded where
+        # 1 was expected, and a simulated embedding failure never firing
+        # since the empty-chunks guard skips calling it at all). Real
+        # GitHub tarballs always have sane, traversable directory
+        # permissions - this was purely a synthetic-fixture gap, not
+        # anything wrong with repository_ingestion.py itself.
+        root_info.mode = 0o755
         tar.addfile(root_info)
         for rel_path, content in files.items():
             info = tarfile.TarInfo(name=f"repo-main/{rel_path}")
             info.size = len(content)
             tar.addfile(info, io.BytesIO(content))
     return buf.getvalue()
+
+
+def test_make_tarball_root_directory_is_traversable():
+    # Regression test for the Day 44 Linux-CI-only failure this fixture
+    # caused (see docs/architecture.md's Day 44 entry for the full
+    # writeup). Deliberately checks the mode *byte written into the tar
+    # stream* rather than actually extracting and walking it: the byte is
+    # what's wrong regardless of platform, but the resulting failure (an
+    # unreadable directory) only ever manifests on POSIX, so an
+    # extract-and-check test would pass on this Windows dev machine even
+    # with the bug reintroduced - exactly how it went unnoticed for 45
+    # days. Checking the byte directly makes this test actually catch a
+    # regression here, not just on whichever CI runner happens to be Linux.
+    data = _make_tarball({"README.md": b"hello\n"})
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        root = tar.getmember("repo-main")
+    assert root.isdir()
+    assert root.mode & 0o100, (
+        f"root directory mode {oct(root.mode)} is missing the owner execute "
+        "bit - it would extract non-traversable on Linux even though "
+        "nothing catches it on Windows"
+    )
 
 
 async def _make_repository(db_session) -> Repository:
