@@ -36,19 +36,22 @@ def _collection_url() -> str:
 
 async def ensure_collection(vector_size: int) -> None:
     """Create the configured collection if it doesn't already exist."""
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(_collection_url())
-        if response.status_code == 200:
-            return
-        if response.status_code != 404:
-            raise VectorStoreError(
-                f"Qdrant returned {response.status_code} checking collection: {response.text}"
-            )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(_collection_url())
+            if response.status_code == 200:
+                return
+            if response.status_code != 404:
+                raise VectorStoreError(
+                    f"Qdrant returned {response.status_code} checking collection: {response.text}"
+                )
 
-        response = await client.put(
-            _collection_url(),
-            json={"vectors": {"size": vector_size, "distance": DISTANCE_METRIC}},
-        )
+            response = await client.put(
+                _collection_url(),
+                json={"vectors": {"size": vector_size, "distance": DISTANCE_METRIC}},
+            )
+    except httpx.RequestError as exc:
+        raise VectorStoreError(f"Could not reach Qdrant: {exc}") from exc
     if response.status_code not in (200, 201):
         raise VectorStoreError(
             f"Qdrant returned {response.status_code} creating collection: {response.text}"
@@ -67,12 +70,15 @@ async def upsert_chunks(points: list[dict]) -> None:
 
     await ensure_collection(len(points[0]["vector"]))
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.put(
-            f"{_collection_url()}/points",
-            params={"wait": "true"},
-            json={"points": points},
-        )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.put(
+                f"{_collection_url()}/points",
+                params={"wait": "true"},
+                json={"points": points},
+            )
+    except httpx.RequestError as exc:
+        raise VectorStoreError(f"Could not reach Qdrant: {exc}") from exc
     if response.status_code != 200:
         raise VectorStoreError(
             f"Qdrant returned {response.status_code} upserting points: {response.text}"
@@ -87,18 +93,21 @@ async def search(vector: list[float], repository_id: uuid.UUID, limit: int = 10)
     Postgres for the actual chunk content, since Qdrant only stores enough
     payload to filter and locate a hit, not the content itself.
     """
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.post(
-            f"{_collection_url()}/points/search",
-            json={
-                "vector": vector,
-                "filter": {
-                    "must": [{"key": "repository_id", "match": {"value": str(repository_id)}}]
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{_collection_url()}/points/search",
+                json={
+                    "vector": vector,
+                    "filter": {
+                        "must": [{"key": "repository_id", "match": {"value": str(repository_id)}}]
+                    },
+                    "limit": limit,
+                    "with_payload": True,
                 },
-                "limit": limit,
-                "with_payload": True,
-            },
-        )
+            )
+    except httpx.RequestError as exc:
+        raise VectorStoreError(f"Could not reach Qdrant: {exc}") from exc
     if response.status_code == 404:
         return []
     if response.status_code != 200:
@@ -114,16 +123,19 @@ async def delete_by_repository(repository_id: uuid.UUID) -> None:
     A no-op (not an error) if the collection doesn't exist yet - there's
     nothing to delete for a repository that was never successfully embedded.
     """
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{_collection_url()}/points/delete",
-            params={"wait": "true"},
-            json={
-                "filter": {
-                    "must": [{"key": "repository_id", "match": {"value": str(repository_id)}}]
-                }
-            },
-        )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{_collection_url()}/points/delete",
+                params={"wait": "true"},
+                json={
+                    "filter": {
+                        "must": [{"key": "repository_id", "match": {"value": str(repository_id)}}]
+                    }
+                },
+            )
+    except httpx.RequestError as exc:
+        raise VectorStoreError(f"Could not reach Qdrant: {exc}") from exc
     if response.status_code == 404:
         return
     if response.status_code != 200:

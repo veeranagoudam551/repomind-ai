@@ -81,6 +81,20 @@ async def test_generate_response_raises_on_api_error(monkeypatch):
         await generate_response("system", "hello")
 
 
+async def test_generate_response_raises_on_connection_failure(monkeypatch):
+    # Day 42: a fully unreachable Anthropic raises a raw httpx.RequestError
+    # with no .status_code to check - this must become an LLMAPIError, not
+    # propagate raw past every caller's `except LLMAPIError`.
+    def handler(request):
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.anthropic_api_key", "sk-ant-test")
+
+    with pytest.raises(LLMAPIError):
+        await generate_response("system", "hello")
+
+
 async def test_generate_response_sends_configured_model_and_max_tokens(monkeypatch):
     def handler(request):
         payload = json.loads(request.content)

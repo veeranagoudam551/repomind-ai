@@ -73,6 +73,19 @@ async def test_ensure_collection_raises_on_create_failure(monkeypatch):
         await ensure_collection(1536)
 
 
+async def test_ensure_collection_raises_on_connection_failure(monkeypatch):
+    # Day 42: a fully unreachable Qdrant (as opposed to Qdrant responding
+    # with an error status) raises a raw httpx.RequestError, not something
+    # with a .status_code - this must become a VectorStoreError like any
+    # other failure, not propagate as an unhandled exception.
+    def handler(request):
+        raise httpx.ConnectError("Connection refused", request=request)
+
+    _install_mock_transport(monkeypatch, handler)
+    with pytest.raises(VectorStoreError):
+        await ensure_collection(1536)
+
+
 async def test_upsert_chunks_empty_list_short_circuits(monkeypatch):
     def handler(request):
         raise AssertionError("should not make an HTTP call for an empty point list")
@@ -106,6 +119,17 @@ async def test_upsert_chunks_raises_on_api_error(monkeypatch):
         if request.method == "GET":
             return httpx.Response(200, json={"result": {}})
         return httpx.Response(500, text="boom")
+
+    _install_mock_transport(monkeypatch, handler)
+    with pytest.raises(VectorStoreError):
+        await upsert_chunks([{"id": "abc", "vector": [0.1], "payload": {}}])
+
+
+async def test_upsert_chunks_raises_on_connection_failure(monkeypatch):
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"result": {}})
+        raise httpx.ConnectTimeout("timed out", request=request)
 
     _install_mock_transport(monkeypatch, handler)
     with pytest.raises(VectorStoreError):
@@ -148,6 +172,15 @@ async def test_search_raises_on_api_error(monkeypatch):
         await search([0.1], "repo-1")
 
 
+async def test_search_raises_on_connection_failure(monkeypatch):
+    def handler(request):
+        raise httpx.ConnectError("Connection refused", request=request)
+
+    _install_mock_transport(monkeypatch, handler)
+    with pytest.raises(VectorStoreError):
+        await search([0.1], "repo-1")
+
+
 async def test_delete_by_repository_sends_payload_filter(monkeypatch):
     def handler(request):
         assert request.url.path.endswith("/points/delete")
@@ -174,6 +207,19 @@ async def test_delete_by_repository_is_noop_when_collection_missing(monkeypatch)
 async def test_delete_by_repository_raises_on_api_error(monkeypatch):
     def handler(request):
         return httpx.Response(500, text="boom")
+
+    _install_mock_transport(monkeypatch, handler)
+    with pytest.raises(VectorStoreError):
+        await delete_by_repository("11111111-1111-1111-1111-111111111111")
+
+
+async def test_delete_by_repository_raises_on_connection_failure(monkeypatch):
+    # This is the exact case Day 39/41 found live: an unreachable Qdrant
+    # used to bubble up as a raw httpx.ConnectError past delete_repository's
+    # `except VectorStoreError` in app/api/repositories.py, surfacing as an
+    # unhandled 500 instead of the graceful 502 every other failure gets.
+    def handler(request):
+        raise httpx.ConnectError("Connection refused", request=request)
 
     _install_mock_transport(monkeypatch, handler)
     with pytest.raises(VectorStoreError):

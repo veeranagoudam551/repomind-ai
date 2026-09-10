@@ -42,10 +42,13 @@ async def _embed_batch(texts: list[str], api_key: str) -> list[list[float]]:
     }
     payload = {"model": settings.embedding_model, "input": texts}
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{OPENAI_API_BASE}/embeddings", headers=headers, json=payload
-        )
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{OPENAI_API_BASE}/embeddings", headers=headers, json=payload
+            )
+    except httpx.RequestError as exc:
+        raise EmbeddingAPIError(f"Could not reach OpenAI: {exc}") from exc
 
     if response.status_code != 200:
         raise EmbeddingAPIError(

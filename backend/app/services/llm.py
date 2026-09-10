@@ -58,10 +58,13 @@ async def generate_response(
         "messages": [{"role": "user", "content": user_message}],
     }
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            f"{ANTHROPIC_API_BASE}/messages", headers=headers, json=payload
-        )
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{ANTHROPIC_API_BASE}/messages", headers=headers, json=payload
+            )
+    except httpx.RequestError as exc:
+        raise LLMAPIError(f"Could not reach Anthropic: {exc}") from exc
 
     if response.status_code != 200:
         raise LLMAPIError(

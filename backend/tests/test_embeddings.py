@@ -108,3 +108,17 @@ async def test_generate_embeddings_raises_on_api_error(monkeypatch):
 
     with pytest.raises(EmbeddingAPIError):
         await generate_embeddings(["hello"])
+
+
+async def test_generate_embeddings_raises_on_connection_failure(monkeypatch):
+    # Day 42: a fully unreachable OpenAI (DNS failure, connection refused,
+    # timeout) raises a raw httpx.RequestError with no .status_code to
+    # check - this must become an EmbeddingAPIError, not propagate raw.
+    def handler(request):
+        raise httpx.ConnectError("Connection refused", request=request)
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.embeddings.settings.openai_api_key", "sk-test")
+
+    with pytest.raises(EmbeddingAPIError):
+        await generate_embeddings(["hello"])

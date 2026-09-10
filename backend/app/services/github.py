@@ -56,8 +56,11 @@ async def fetch_repository(owner: str, repo: str) -> GitHubRepoInfo:
     if settings.github_token:
         headers["Authorization"] = f"Bearer {settings.github_token}"
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(f"{GITHUB_API_BASE}/repos/{owner}/{repo}", headers=headers)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{GITHUB_API_BASE}/repos/{owner}/{repo}", headers=headers)
+    except httpx.RequestError as exc:
+        raise GitHubAPIError(f"Could not reach GitHub: {exc}") from exc
 
     if response.status_code == 404:
         raise GitHubRepoNotFound(f"Repository '{owner}/{repo}' was not found on GitHub")
