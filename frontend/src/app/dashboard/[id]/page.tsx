@@ -46,6 +46,7 @@ const IN_PROGRESS_STATUSES: RepositoryStatus[] = ["pending", "cloning", "process
 
 export default async function RepositoryDetailPage(props: PageProps<"/dashboard/[id]">) {
   const { id } = await props.params;
+  const { deleteError } = await props.searchParams;
 
   const token = await getSessionToken();
   if (!token) {
@@ -110,6 +111,12 @@ export default async function RepositoryDetailPage(props: PageProps<"/dashboard/
           {repository.status === "failed" && repository.error_message && (
             <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {repository.error_message}
+            </p>
+          )}
+
+          {typeof deleteError === "string" && (
+            <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              Could not delete this repository: {deleteError}
             </p>
           )}
 

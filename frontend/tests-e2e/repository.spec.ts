@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { uniqueEmail } from "./helpers";
+import { seedRepository } from "./seed";
 
 const PASSWORD = "TestPass123!";
 
@@ -80,6 +81,30 @@ test.describe("repository management", () => {
     await page.getByRole("button", { name: "Delete" }).click();
     await expect(page).toHaveURL("/dashboard");
     await expect(page.getByText("No repositories yet")).toBeVisible();
+  });
+
+  test("shows a graceful inline error instead of crashing when delete fails", async ({ page }) => {
+    // Day 41: deleteRepositoryAndRedirect used to have no error handling at
+    // all — a failed DELETE (e.g. Day 39's real 502-on-unreachable-Qdrant
+    // case) threw unhandled and crashed the whole page. It now redirects
+    // back to this same page with `?deleteError=` instead, matching the
+    // reindex action's existing "fail gracefully, stay on the page" pattern
+    // rather than reindex's silent-swallow approach, since delete has no
+    // status badge to fall back on for showing what happened. There's no
+    // deterministic way to force a real backend failure from here (short of
+    // making Qdrant genuinely unreachable, which isn't something this test
+    // can control), so this exercises the exact new rendering branch
+    // directly via the URL it redirects to on failure.
+    const email = uniqueEmail("e2e_delete_error");
+    await registerAndLogin(page, email);
+    const repoId = seedRepository(email, "e2e/delete-error-repo");
+
+    await page.goto(`/dashboard/${repoId}?deleteError=${encodeURIComponent("Qdrant unreachable")}`);
+    await expect(
+      page.getByText("Could not delete this repository: Qdrant unreachable")
+    ).toBeVisible();
+    // The page itself must still be intact, not an error boundary.
+    await expect(page.getByRole("button", { name: "Delete" })).toBeVisible();
   });
 
   test("shows a validation error for an invalid GitHub URL", async ({ page }) => {

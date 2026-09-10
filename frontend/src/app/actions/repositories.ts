@@ -45,7 +45,19 @@ export async function deleteRepositoryAndRedirect(id: string): Promise<void> {
     redirect("/login");
   }
 
-  await deleteRepository(token, id);
+  try {
+    await deleteRepository(token, id);
+  } catch (err) {
+    // e.g. a 502 if Qdrant is unreachable (Day 39) — redirect back to the
+    // detail page with the error surfaced instead of throwing unhandled,
+    // which previously crashed the whole page (Day 41). The repository
+    // still exists at this point, so staying on its page and showing why
+    // is more useful than an opaque error boundary.
+    const message = err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
+    revalidatePath(`/dashboard/${id}`);
+    redirect(`/dashboard/${id}?deleteError=${encodeURIComponent(message)}`);
+  }
+
   revalidatePath("/dashboard");
   redirect("/dashboard");
 }
