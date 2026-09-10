@@ -5,6 +5,7 @@ import {
   Bug,
   ClipboardCheck,
   MessageSquare,
+  Network,
   RefreshCw,
   Sparkles,
   SearchIcon,
@@ -167,6 +168,19 @@ export default async function RepositoryDetailPage(props: PageProps<"/dashboard/
               <Button variant="outline" size="sm" disabled>
                 <Bug />
                 Debug
+              </Button>
+            )}
+            {repository.file_count > 0 ? (
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/dashboard/${repository.id}/architecture`}>
+                  <Network />
+                  Architecture
+                </Link>
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" disabled>
+                <Network />
+                Architecture
               </Button>
             )}
             <form action={reindexRepositoryAction.bind(null, repository.id)}>

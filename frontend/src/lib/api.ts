@@ -271,3 +271,19 @@ export function debugRepository(
     body: JSON.stringify({ description }),
   });
 }
+
+export type ArchitectureAnalysisResult = {
+  analysis: string;
+  file_count: number;
+  readme_path: string | null;
+};
+
+export function analyzeRepositoryArchitecture(
+  token: string,
+  repositoryId: string
+): Promise<ArchitectureAnalysisResult> {
+  return request<ArchitectureAnalysisResult>(`/repositories/${repositoryId}/architecture`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
