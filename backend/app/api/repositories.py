@@ -13,6 +13,7 @@ from app.models.repository import Repository, RepositoryStatus
 from app.models.repository_file import RepositoryFile
 from app.models.user import User
 from app.schemas.repository import (
+    ArchitectureAnalysisResponse,
     CodeChunkRead,
     CodeSearchResult,
     DebugRequest,
@@ -57,6 +58,21 @@ DEBUG_NO_CONTEXT_MESSAGE = (
     "I couldn't find any indexed code in this repository relevant to this "
     "description. The repository may not have finished indexing yet, or "
     "nothing in it relates to the error described."
+)
+
+ARCHITECTURE_SYSTEM_PROMPT = (
+    "You are a software architect giving a newcomer a high-level overview "
+    "of a repository. You are given its full file tree (paths and "
+    "languages) and, if available, its README content - nothing else, no "
+    "other file contents. From the file tree alone, infer the likely main "
+    "components/modules from directory structure, the apparent tech stack "
+    "from file extensions and config files (e.g. package.json, "
+    "pyproject.toml, requirements.txt), and likely entry points from "
+    "conventional naming (e.g. main.py, index.ts, app.py). Use the README "
+    "for anything it states directly about the project's purpose or "
+    "design. Be explicit that structural inferences are based on file "
+    "organization, not a reading of the source itself, and don't invent "
+    "components or behavior the file tree and README don't evidence."
 )
 
 
@@ -444,3 +460,63 @@ async def debug_repository(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
     return DebugResponse(diagnosis=diagnosis, sources=sources)
+
+
+@router.post("/{repository_id}/architecture", response_model=ArchitectureAnalysisResponse)
+async def analyze_repository_architecture(
+    repository_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    repository = await _get_owned_repository(repository_id, db, current_user)
+
+    files = (
+        await db.scalars(
+            select(RepositoryFile)
+            .where(RepositoryFile.repository_id == repository_id)
+            .order_by(RepositoryFile.file_path)
+        )
+    ).all()
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No files available to analyze for this repository",
+        )
+
+    readme_file = next(
+        (
+            f
+            for f in files
+            if "/" not in f.file_path and f.file_path.lower().startswith("readme")
+        ),
+        None,
+    )
+    readme_content: Optional[str] = None
+    if readme_file is not None:
+        readme_chunks = (
+            await db.scalars(
+                select(CodeChunk)
+                .where(CodeChunk.repository_file_id == readme_file.id)
+                .order_by(CodeChunk.chunk_index)
+            )
+        ).all()
+        if readme_chunks:
+            readme_content = reconstruct_file_content(readme_chunks)
+
+    file_tree = "\n".join(f"{f.file_path} ({f.language or 'unknown'})" for f in files)
+    user_prompt = f"Repository: {repository.name}\n\nFile tree:\n{file_tree}"
+    if readme_content:
+        user_prompt += f"\n\nREADME ({readme_file.file_path}):\n```\n{readme_content}\n```"
+
+    try:
+        analysis = await generate_response(ARCHITECTURE_SYSTEM_PROMPT, user_prompt)
+    except LLMConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except LLMAPIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    return ArchitectureAnalysisResponse(
+        analysis=analysis,
+        file_count=len(files),
+        readme_path=readme_file.file_path if readme_file else None,
+    )

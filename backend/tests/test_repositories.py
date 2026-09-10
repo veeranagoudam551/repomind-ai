@@ -697,3 +697,96 @@ async def test_debug_rejects_empty_description(client, db_session, monkeypatch):
         f"/repositories/{repo_id}/debug", json={"description": ""}, headers=headers
     )
     assert response.status_code == 422
+
+
+async def test_architecture_requires_auth(client):
+    response = await client.post(
+        "/repositories/00000000-0000-0000-0000-000000000000/architecture"
+    )
+    assert response.status_code == 401
+
+
+async def test_architecture_returns_analysis_with_readme(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "architect1@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    readme_file = RepositoryFile(repository_id=repo_id, file_path="README.md", size_bytes=20)
+    db_session.add(readme_file)
+    await db_session.commit()
+    await db_session.refresh(readme_file)
+    readme_chunk = CodeChunk(
+        repository_id=repo_id,
+        repository_file_id=readme_file.id,
+        chunk_index=0,
+        content="# Demo\nA demo Flask app.",
+        start_line=1,
+        end_line=2,
+    )
+    db_session.add(readme_chunk)
+    await db_session.commit()
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        assert "app/main.py" in user_message
+        assert "README.md" in user_message
+        assert "A demo Flask app." in user_message
+        return "This is a small Flask application with a single entry point."
+
+    monkeypatch.setattr("app.api.repositories.generate_response", _fake_generate_response)
+
+    response = await client.post(f"/repositories/{repo_id}/architecture", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["analysis"] == "This is a small Flask application with a single entry point."
+    assert body["file_count"] == 2
+    assert body["readme_path"] == "README.md"
+
+
+async def test_architecture_returns_analysis_without_readme(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "architect2@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        assert "README" not in user_message
+        return "This appears to be a small Python project."
+
+    monkeypatch.setattr("app.api.repositories.generate_response", _fake_generate_response)
+
+    response = await client.post(f"/repositories/{repo_id}/architecture", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["file_count"] == 1
+    assert body["readme_path"] is None
+
+
+async def test_architecture_not_found_for_other_user(client, db_session, monkeypatch):
+    headers_a = await register_and_login(client, "architectowner@example.com")
+    headers_b = await register_and_login(client, "architectintruder@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers_a)
+
+    response = await client.post(f"/repositories/{repo_id}/architecture", headers=headers_b)
+    assert response.status_code == 404
+
+
+async def test_architecture_rejects_when_no_files(client, monkeypatch):
+    headers = await register_and_login(client, "architect3@example.com")
+    _mock_fetch(monkeypatch, result=make_repo_info())
+    created = await client.post(
+        "/repositories", json={"github_url": "octocat/Hello-World"}, headers=headers
+    )
+    repo_id = created.json()["id"]
+
+    response = await client.post(f"/repositories/{repo_id}/architecture", headers=headers)
+    assert response.status_code == 400
+
+
+async def test_architecture_maps_llm_config_error_to_503(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "architect4@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        raise LLMConfigError("ANTHROPIC_API_KEY is not configured")
+
+    monkeypatch.setattr("app.api.repositories.generate_response", _fake_generate_response)
+
+    response = await client.post(f"/repositories/{repo_id}/architecture", headers=headers)
+    assert response.status_code == 503

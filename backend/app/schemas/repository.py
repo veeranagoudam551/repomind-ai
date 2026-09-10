@@ -82,3 +82,9 @@ class DebugRequest(BaseModel):
 class DebugResponse(BaseModel):
     diagnosis: str
     sources: list[CodeSearchResult]
+
+
+class ArchitectureAnalysisResponse(BaseModel):
+    analysis: str
+    file_count: int
+    readme_path: Optional[str]
