@@ -13,6 +13,9 @@ from app.models.repository import Repository, RepositoryStatus
 from app.models.repository_file import RepositoryFile
 from app.models.user import User
 from app.schemas.repository import (
+    AgentRequest,
+    AgentResponse,
+    AgentStepRead,
     ArchitectureAnalysisResponse,
     CodeChunkRead,
     CodeSearchResult,
@@ -28,6 +31,7 @@ from app.schemas.repository import (
     SecurityScanResponse,
 )
 from app.services import vector_store
+from app.services.agent import run_agent
 from app.services.code_chunking import reconstruct_file_content
 from app.services.embeddings import EmbeddingAPIError, EmbeddingConfigError, generate_embedding
 from app.services.github import (
@@ -578,3 +582,25 @@ async def scan_repository_security(
     findings.sort(key=lambda f: (_SEVERITY_ORDER.get(f.severity, 3), f.file_path, f.line))
 
     return SecurityScanResponse(findings=findings, files_scanned=files_scanned)
+
+
+@router.post("/{repository_id}/agent", response_model=AgentResponse)
+async def run_repository_agent(
+    repository_id: UUID,
+    payload: AgentRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repository(repository_id, db, current_user)
+
+    try:
+        final_state = await run_agent(repository_id, payload.goal, db)
+    except LLMConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except LLMAPIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    return AgentResponse(
+        answer=final_state["answer"] or "",
+        steps=[AgentStepRead(**step) for step in final_state["steps"]],
+    )

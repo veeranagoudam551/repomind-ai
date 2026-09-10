@@ -102,3 +102,18 @@ class SecurityFindingRead(BaseModel):
 class SecurityScanResponse(BaseModel):
     findings: list[SecurityFindingRead]
     files_scanned: int
+
+
+class AgentRequest(BaseModel):
+    goal: str = Field(min_length=1, max_length=2000)
+
+
+class AgentStepRead(BaseModel):
+    tool: str
+    arguments: dict
+    summary: str
+
+
+class AgentResponse(BaseModel):
+    answer: str
+    steps: list[AgentStepRead]

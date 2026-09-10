@@ -1,3 +1,4 @@
+import json
 import uuid
 
 from sqlalchemy import select
@@ -859,3 +860,155 @@ async def test_security_scan_rejects_when_no_files(client, monkeypatch):
 
     response = await client.post(f"/repositories/{repo_id}/security-scan", headers=headers)
     assert response.status_code == 400
+
+
+async def test_agent_requires_auth(client):
+    response = await client.post(
+        "/repositories/00000000-0000-0000-0000-000000000000/agent", json={"goal": "hi"}
+    )
+    assert response.status_code == 401
+
+
+async def test_agent_finishes_immediately_without_tools(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "agent1@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        return json.dumps({"action": "finish", "answer": "This repo has one file, app/main.py."})
+
+    monkeypatch.setattr("app.services.agent.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent", json={"goal": "what files exist?"}, headers=headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "This repo has one file, app/main.py."
+    assert body["steps"] == []
+
+
+async def test_agent_calls_search_code_tool_then_finishes(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "agent2@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    calls = {"count": 0}
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return json.dumps(
+                {"action": "tool", "tool": "search_code", "arguments": {"query": "app factory"}}
+            )
+        return json.dumps({"action": "finish", "answer": "The app factory lives in app/main.py."})
+
+    async def _fake_embed(text):
+        return [0.1, 0.2]
+
+    async def _fake_search(vector, repository_id, limit=10):
+        return [{"id": str(chunk.id), "score": 0.9, "payload": {"code_chunk_id": str(chunk.id)}}]
+
+    monkeypatch.setattr("app.services.agent.generate_response", _fake_generate_response)
+    monkeypatch.setattr("app.services.agent.generate_embedding", _fake_embed)
+    monkeypatch.setattr("app.services.agent.vector_store.search", _fake_search)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent", json={"goal": "how is the app created?"}, headers=headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "The app factory lives in app/main.py."
+    assert len(body["steps"]) == 1
+    assert body["steps"][0]["tool"] == "search_code"
+    assert "app/main.py" in body["steps"][0]["summary"]
+
+
+async def test_agent_calls_explain_file_tool_then_finishes(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "agent3@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    calls = {"count": 0}
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return json.dumps(
+                {
+                    "action": "tool",
+                    "tool": "explain_file",
+                    "arguments": {"file_path": "app/main.py"},
+                }
+            )
+        if calls["count"] == 2:
+            # explain_file's own internal LLM call, same mocked function.
+            return "This file defines the FastAPI application factory."
+        return json.dumps(
+            {"action": "finish", "answer": "app/main.py defines the FastAPI app factory."}
+        )
+
+    monkeypatch.setattr("app.services.agent.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent",
+        json={"goal": "what does app/main.py do?"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["steps"]) == 1
+    assert body["steps"][0]["tool"] == "explain_file"
+    assert body["steps"][0]["summary"] == "This file defines the FastAPI application factory."
+    assert body["answer"] == "app/main.py defines the FastAPI app factory."
+
+
+async def test_agent_forces_finish_after_max_tool_calls(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "agent4@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        return json.dumps({"action": "tool", "tool": "does_not_exist", "arguments": {}})
+
+    monkeypatch.setattr("app.services.agent.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent", json={"goal": "loop forever"}, headers=headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["steps"]) == 4
+    assert body["answer"] != ""
+
+
+async def test_agent_not_found_for_other_user(client, db_session, monkeypatch):
+    headers_a = await register_and_login(client, "agentowner@example.com")
+    headers_b = await register_and_login(client, "agentintruder@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers_a)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent", json={"goal": "hi"}, headers=headers_b
+    )
+    assert response.status_code == 404
+
+
+async def test_agent_maps_llm_config_error_to_503(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "agent5@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        raise LLMConfigError("ANTHROPIC_API_KEY is not configured")
+
+    monkeypatch.setattr("app.services.agent.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent", json={"goal": "anything"}, headers=headers
+    )
+    assert response.status_code == 503
+
+
+async def test_agent_rejects_empty_goal(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "agent6@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent", json={"goal": ""}, headers=headers
+    )
+    assert response.status_code == 422
