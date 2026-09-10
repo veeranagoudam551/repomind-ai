@@ -313,3 +313,26 @@ export function scanRepositorySecurity(
     headers: authHeaders(token),
   });
 }
+
+export type AgentStep = {
+  tool: string;
+  arguments: Record<string, unknown>;
+  summary: string;
+};
+
+export type AgentResult = {
+  answer: string;
+  steps: AgentStep[];
+};
+
+export function runRepositoryAgent(
+  token: string,
+  repositoryId: string,
+  goal: string
+): Promise<AgentResult> {
+  return request<AgentResult>(`/repositories/${repositoryId}/agent`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ goal }),
+  });
+}
