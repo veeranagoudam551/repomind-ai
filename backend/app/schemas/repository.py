@@ -73,3 +73,12 @@ class ExplainFileResponse(BaseModel):
 class ReviewFileResponse(BaseModel):
     file_path: str
     review: str
+
+
+class DebugRequest(BaseModel):
+    description: str = Field(min_length=1, max_length=4000)
+
+
+class DebugResponse(BaseModel):
+    diagnosis: str
+    sources: list[CodeSearchResult]

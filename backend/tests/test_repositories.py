@@ -570,3 +570,130 @@ async def test_review_file_maps_llm_config_error_to_503(client, db_session, monk
         f"/repositories/{repo_id}/files/{chunk.repository_file_id}/review", headers=headers
     )
     assert response.status_code == 503
+
+
+async def test_debug_requires_auth(client):
+    response = await client.post(
+        "/repositories/00000000-0000-0000-0000-000000000000/debug",
+        json={"description": "it crashes"},
+    )
+    assert response.status_code == 401
+
+
+async def test_debug_returns_diagnosis_with_sources(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "debugger1@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_embed(text):
+        return [0.1, 0.2]
+
+    async def _fake_search(vector, repository_id, limit=10):
+        assert vector == [0.1, 0.2]
+        assert str(repository_id) == str(repo_id)
+        return [{"id": str(chunk.id), "score": 0.9, "payload": {"code_chunk_id": str(chunk.id)}}]
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        assert "app/main.py" in user_message
+        assert "NoneType has no attribute" in user_message
+        return "The crash happens because create_app() returns None."
+
+    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+    monkeypatch.setattr("app.api.repositories.vector_store.search", _fake_search)
+    monkeypatch.setattr("app.api.repositories.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/debug",
+        json={"description": "NoneType has no attribute 'foo' on startup"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["diagnosis"] == "The crash happens because create_app() returns None."
+    assert len(body["sources"]) == 1
+    assert body["sources"][0]["code_chunk_id"] == str(chunk.id)
+    assert body["sources"][0]["file_path"] == "app/main.py"
+
+
+async def test_debug_returns_canned_reply_when_no_hits(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "debugger2@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_embed(text):
+        return [0.1, 0.2]
+
+    async def _fake_search(vector, repository_id, limit=10):
+        return []
+
+    async def _fail_if_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called when there is no retrieved context")
+
+    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+    monkeypatch.setattr("app.api.repositories.vector_store.search", _fake_search)
+    monkeypatch.setattr("app.api.repositories.generate_response", _fail_if_called)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/debug", json={"description": "anything"}, headers=headers
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sources"] == []
+    assert "couldn't find any indexed code" in body["diagnosis"]
+
+
+async def test_debug_not_found_for_other_user(client, db_session, monkeypatch):
+    headers_a = await register_and_login(client, "debugowner@example.com")
+    headers_b = await register_and_login(client, "debugintruder@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers_a)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/debug", json={"description": "hi"}, headers=headers_b
+    )
+    assert response.status_code == 404
+
+
+async def test_debug_maps_embedding_config_error_to_503(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "debugger3@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_embed(text):
+        raise EmbeddingConfigError("OPENAI_API_KEY is not configured")
+
+    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/debug", json={"description": "hi"}, headers=headers
+    )
+    assert response.status_code == 503
+
+
+async def test_debug_maps_llm_config_error_to_503(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "debugger4@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_embed(text):
+        return [0.1, 0.2]
+
+    async def _fake_search(vector, repository_id, limit=10):
+        return [{"id": str(chunk.id), "score": 0.9, "payload": {"code_chunk_id": str(chunk.id)}}]
+
+    async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
+        raise LLMConfigError("ANTHROPIC_API_KEY is not configured")
+
+    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+    monkeypatch.setattr("app.api.repositories.vector_store.search", _fake_search)
+    monkeypatch.setattr("app.api.repositories.generate_response", _fake_generate_response)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/debug", json={"description": "hi"}, headers=headers
+    )
+    assert response.status_code == 503
+
+
+async def test_debug_rejects_empty_description(client, db_session, monkeypatch):
+    headers = await register_and_login(client, "debugger5@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/debug", json={"description": ""}, headers=headers
+    )
+    assert response.status_code == 422

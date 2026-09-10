@@ -15,6 +15,8 @@ from app.models.user import User
 from app.schemas.repository import (
     CodeChunkRead,
     CodeSearchResult,
+    DebugRequest,
+    DebugResponse,
     ExplainFileResponse,
     RepositoryCreate,
     RepositoryFileRead,
@@ -37,6 +39,25 @@ from app.services.repository_ingestion import ingest_repository
 from app.services.vector_store import VectorStoreError
 
 router = APIRouter(prefix="/repositories", tags=["repositories"])
+
+DEBUG_SEARCH_LIMIT = 5
+
+DEBUG_SYSTEM_PROMPT = (
+    "You are a senior software engineer helping debug an issue in a "
+    "specific repository. You are given retrieved code snippets as your "
+    "only source of truth, plus a description of the bug or error. "
+    "Identify the likely root cause and suggest a concrete fix, citing "
+    "specific files, functions, or lines from the retrieved context. If "
+    "the context doesn't contain enough information to diagnose the issue "
+    "confidently, say so explicitly rather than guessing. Never claim a "
+    "file or function exists unless it appears in the retrieved context."
+)
+
+DEBUG_NO_CONTEXT_MESSAGE = (
+    "I couldn't find any indexed code in this repository relevant to this "
+    "description. The repository may not have finished indexing yet, or "
+    "nothing in it relates to the error described."
+)
 
 
 @router.post("", response_model=RepositoryRead, status_code=status.HTTP_201_CREATED)
@@ -358,3 +379,68 @@ async def search_repository(
     ]
     results.sort(key=lambda r: r.score, reverse=True)
     return results
+
+
+@router.post("/{repository_id}/debug", response_model=DebugResponse)
+async def debug_repository(
+    repository_id: UUID,
+    payload: DebugRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _get_owned_repository(repository_id, db, current_user)
+
+    try:
+        query_vector = await generate_embedding(payload.description)
+    except EmbeddingConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except EmbeddingAPIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    try:
+        hits = await vector_store.search(query_vector, repository_id, limit=DEBUG_SEARCH_LIMIT)
+    except VectorStoreError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    if not hits:
+        return DebugResponse(diagnosis=DEBUG_NO_CONTEXT_MESSAGE, sources=[])
+
+    score_by_chunk_id = {UUID(hit["payload"]["code_chunk_id"]): hit["score"] for hit in hits}
+
+    rows = await db.execute(
+        select(CodeChunk, RepositoryFile.file_path)
+        .join(RepositoryFile, CodeChunk.repository_file_id == RepositoryFile.id)
+        .where(CodeChunk.id.in_(score_by_chunk_id.keys()))
+    )
+
+    sources = [
+        CodeSearchResult(
+            code_chunk_id=chunk.id,
+            file_path=file_path,
+            content=chunk.content,
+            start_line=chunk.start_line,
+            end_line=chunk.end_line,
+            score=score_by_chunk_id[chunk.id],
+        )
+        for chunk, file_path in rows
+    ]
+    sources.sort(key=lambda r: r.score, reverse=True)
+
+    context_blocks = [
+        f"File: {source.file_path} (lines {source.start_line}-{source.end_line})\n"
+        f"```\n{source.content}\n```"
+        for source in sources
+    ]
+    user_prompt = (
+        f"Retrieved context:\n\n{chr(10).join(context_blocks)}\n\n"
+        f"Bug description: {payload.description}"
+    )
+
+    try:
+        diagnosis = await generate_response(DEBUG_SYSTEM_PROMPT, user_prompt)
+    except LLMConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+    except LLMAPIError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    return DebugResponse(diagnosis=diagnosis, sources=sources)
