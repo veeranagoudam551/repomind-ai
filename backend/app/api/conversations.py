@@ -30,12 +30,13 @@ from app.schemas.conversation import (
     MessageRead,
     MessageSource,
 )
+from app.schemas.errors import error_response
 from app.services import vector_store
 from app.services.embeddings import EmbeddingAPIError, EmbeddingConfigError, generate_embedding
 from app.services.llm import LLMAPIError, LLMConfigError, generate_response
 from app.services.vector_store import VectorStoreError
 
-router = APIRouter(tags=["conversations"])
+router = APIRouter(tags=["Conversations"])
 
 SEARCH_LIMIT = 5
 
@@ -113,6 +114,12 @@ async def _to_message_read(db: AsyncSession, message: Message) -> MessageRead:
     "/repositories/{repository_id}/conversations",
     response_model=ConversationRead,
     status_code=status.HTTP_201_CREATED,
+    summary="Start a new conversation",
+    description="Creates an empty, titled conversation thread scoped to one repository.",
+    responses={
+        401: error_response("Missing, invalid, or expired access token."),
+        404: error_response("Repository not found or not owned by the current user."),
+    },
 )
 async def create_conversation(
     repository_id: UUID,
@@ -130,7 +137,16 @@ async def create_conversation(
     return conversation
 
 
-@router.get("/repositories/{repository_id}/conversations", response_model=list[ConversationRead])
+@router.get(
+    "/repositories/{repository_id}/conversations",
+    response_model=list[ConversationRead],
+    summary="List a repository's conversations",
+    description="Newest first. Only conversations owned by the current user for this repository.",
+    responses={
+        401: error_response("Missing, invalid, or expired access token."),
+        404: error_response("Repository not found or not owned by the current user."),
+    },
+)
 async def list_conversations(
     repository_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -145,7 +161,16 @@ async def list_conversations(
     return result.all()
 
 
-@router.get("/conversations/{conversation_id}/messages", response_model=list[MessageRead])
+@router.get(
+    "/conversations/{conversation_id}/messages",
+    response_model=list[MessageRead],
+    summary="List a conversation's messages",
+    description="Oldest first, including each message's cited source code chunks (if any).",
+    responses={
+        401: error_response("Missing, invalid, or expired access token."),
+        404: error_response("Conversation not found or not owned by the current user."),
+    },
+)
 async def list_messages(
     conversation_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -164,6 +189,22 @@ async def list_messages(
     "/conversations/{conversation_id}/messages",
     response_model=MessageRead,
     dependencies=[Depends(per_user_rate_limit("ai"))],
+    summary="Send a message and get a RAG-grounded reply",
+    description=(
+        "Persists the user's message, embeds it, retrieves the most "
+        "relevant indexed code chunks from this conversation's repository, "
+        "and returns an LLM-generated assistant reply grounded in that "
+        "retrieved context (also persisted). If nothing relevant is "
+        "indexed yet, returns a message saying so rather than a fabricated "
+        "answer."
+    ),
+    responses={
+        401: error_response("Missing, invalid, or expired access token."),
+        404: error_response("Conversation not found or not owned by the current user."),
+        429: error_response("AI request rate limit exceeded for this user."),
+        502: error_response("The embedding provider, vector store, or LLM provider returned an error."),
+        503: error_response("The embedding or LLM provider is not configured."),
+    },
 )
 async def send_message(
     conversation_id: UUID,

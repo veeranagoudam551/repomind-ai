@@ -33,6 +33,7 @@ from app.schemas.repository import (
     SecurityFindingRead,
     SecurityScanResponse,
 )
+from app.schemas.errors import error_response
 from app.services import vector_store
 from app.services.agent import run_agent
 from app.services.code_chunking import reconstruct_file_content
@@ -51,7 +52,14 @@ from app.tasks import ingest_repository_task
 
 _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
-router = APIRouter(prefix="/repositories", tags=["repositories"])
+# No router-level `tags=` (Day 49): this one router spans several
+# conceptually distinct areas (repository CRUD, file browsing, search, AI
+# analysis, the agent), so each route below sets its own explicit tag(s)
+# instead of every operation being lumped under one generic tag.
+router = APIRouter(prefix="/repositories")
+
+_REPO_NOT_FOUND = error_response("Repository not found or not owned by the current user.")
+_UNAUTHORIZED = error_response("Missing, invalid, or expired access token.")
 
 DEFAULT_REPOSITORY_PAGE_SIZE = 10
 MAX_REPOSITORY_PAGE_SIZE = 100
@@ -120,6 +128,24 @@ ARCHITECTURE_SYSTEM_PROMPT = (
     response_model=RepositoryRead,
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(per_user_rate_limit("ingestion"))],
+    tags=["Repositories"],
+    summary="Add a repository for analysis",
+    description=(
+        "Looks up a public GitHub repository by URL and queues it for "
+        "background ingestion (clone, scan, chunk, embed). Returns "
+        "immediately with `status: pending`; poll GET /repositories/{id} "
+        "for progress."
+    ),
+    responses={
+        400: error_response(
+            "Invalid GitHub URL, the repository is private (unsupported), "
+            "it exceeds the configured size limit, or it was already added."
+        ),
+        401: _UNAUTHORIZED,
+        404: error_response("The repository was not found on GitHub."),
+        429: error_response("Ingestion rate limit exceeded for this user."),
+        502: error_response("GitHub's API returned an error or was unreachable."),
+    },
 )
 async def create_repository(
     payload: RepositoryCreate,
@@ -182,10 +208,22 @@ async def create_repository(
     return await _queue_ingestion(repository, db)
 
 
-@router.get("", response_model=RepositoryPage)
+@router.get(
+    "",
+    response_model=RepositoryPage,
+    tags=["Repositories"],
+    summary="List the current user's repositories",
+    description="Paginated, newest first. Only returns repositories owned by the current user.",
+    responses={401: _UNAUTHORIZED},
+)
 async def list_repositories(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(DEFAULT_REPOSITORY_PAGE_SIZE, ge=1, le=MAX_REPOSITORY_PAGE_SIZE),
+    page: int = Query(1, ge=1, description="1-indexed page number."),
+    page_size: int = Query(
+        DEFAULT_REPOSITORY_PAGE_SIZE,
+        ge=1,
+        le=MAX_REPOSITORY_PAGE_SIZE,
+        description=f"Items per page (max {MAX_REPOSITORY_PAGE_SIZE}).",
+    ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -232,7 +270,13 @@ async def _get_owned_repository(
     return repository
 
 
-@router.get("/{repository_id}", response_model=RepositoryRead)
+@router.get(
+    "/{repository_id}",
+    response_model=RepositoryRead,
+    tags=["Repositories"],
+    summary="Get a repository",
+    responses={401: _UNAUTHORIZED, 404: _REPO_NOT_FOUND},
+)
 async def get_repository(
     repository_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -241,7 +285,18 @@ async def get_repository(
     return await _get_owned_repository(repository_id, db, current_user)
 
 
-@router.delete("/{repository_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{repository_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Repositories"],
+    summary="Delete a repository",
+    description="Removes the repository and its indexed data, including vectors stored in Qdrant.",
+    responses={
+        401: _UNAUTHORIZED,
+        404: _REPO_NOT_FOUND,
+        502: error_response("The vector store returned an error while deleting indexed vectors."),
+    },
+)
 async def delete_repository(
     repository_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -272,6 +327,15 @@ IN_PROGRESS_STATUSES = (
     "/{repository_id}/reindex",
     response_model=RepositoryRead,
     dependencies=[Depends(per_user_rate_limit("ingestion"))],
+    tags=["Repositories"],
+    summary="Re-queue a repository for ingestion",
+    description="Re-runs the clone/scan/chunk/embed pipeline. Rejected if ingestion is already in progress.",
+    responses={
+        401: _UNAUTHORIZED,
+        404: _REPO_NOT_FOUND,
+        409: error_response("Ingestion is already in progress for this repository."),
+        429: error_response("Ingestion rate limit exceeded for this user."),
+    },
 )
 async def reindex_repository(
     repository_id: UUID,
@@ -304,7 +368,14 @@ async def reindex_repository(
     return await _queue_ingestion(repository, db)
 
 
-@router.get("/{repository_id}/files", response_model=list[RepositoryFileRead])
+@router.get(
+    "/{repository_id}/files",
+    response_model=list[RepositoryFileRead],
+    tags=["Files"],
+    summary="List a repository's indexed files",
+    description="Alphabetical by path. Reflects the most recent completed ingestion, if any.",
+    responses={401: _UNAUTHORIZED, 404: _REPO_NOT_FOUND},
+)
 async def list_repository_files(
     repository_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -346,10 +417,31 @@ async def _get_file_content_for_llm(
     return repository_file, reconstruct_file_content(chunks)
 
 
+_REPO_OR_FILE_NOT_FOUND = error_response(
+    "Repository not found/not owned by the current user, or the file was "
+    "not found in this repository."
+)
+_NO_FILE_CONTENT = error_response("The file has no indexed content (ingestion may not be complete).")
+_AI_RATE_LIMITED = error_response("AI request rate limit exceeded for this user.")
+_LLM_UNAVAILABLE = error_response("The LLM provider is not configured.")
+_LLM_UPSTREAM_ERROR = error_response("The LLM provider returned an error or was unreachable.")
+
+
 @router.post(
     "/{repository_id}/files/{file_id}/explain",
     response_model=ExplainFileResponse,
     dependencies=[Depends(per_user_rate_limit("ai"))],
+    tags=["AI Analysis"],
+    summary="Explain a single file",
+    description="Generates a plain-language explanation of one indexed file, grounded only in its content.",
+    responses={
+        400: _NO_FILE_CONTENT,
+        401: _UNAUTHORIZED,
+        404: _REPO_OR_FILE_NOT_FOUND,
+        429: _AI_RATE_LIMITED,
+        502: _LLM_UPSTREAM_ERROR,
+        503: _LLM_UNAVAILABLE,
+    },
 )
 async def explain_repository_file(
     repository_id: UUID,
@@ -383,6 +475,17 @@ async def explain_repository_file(
     "/{repository_id}/files/{file_id}/review",
     response_model=ReviewFileResponse,
     dependencies=[Depends(per_user_rate_limit("ai"))],
+    tags=["AI Analysis"],
+    summary="Review a single file",
+    description="Generates a code review (bugs, security issues, code smells) of one indexed file.",
+    responses={
+        400: _NO_FILE_CONTENT,
+        401: _UNAUTHORIZED,
+        404: _REPO_OR_FILE_NOT_FOUND,
+        429: _AI_RATE_LIMITED,
+        502: _LLM_UPSTREAM_ERROR,
+        503: _LLM_UNAVAILABLE,
+    },
 )
 async def review_repository_file(
     repository_id: UUID,
@@ -415,10 +518,20 @@ async def review_repository_file(
     return ReviewFileResponse(file_path=repository_file.file_path, review=review)
 
 
-@router.get("/{repository_id}/chunks", response_model=list[CodeChunkRead])
+@router.get(
+    "/{repository_id}/chunks",
+    response_model=list[CodeChunkRead],
+    tags=["Files"],
+    summary="List a repository's code chunks",
+    description=(
+        "The chunk-level decomposition each indexed file was split into for "
+        "embedding/search. Optionally filtered to a single file."
+    ),
+    responses={401: _UNAUTHORIZED, 404: _REPO_NOT_FOUND},
+)
 async def list_repository_chunks(
     repository_id: UUID,
-    file_id: Optional[UUID] = None,
+    file_id: Optional[UUID] = Query(None, description="Restrict results to chunks from this file."),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -434,6 +547,19 @@ async def list_repository_chunks(
     "/{repository_id}/search",
     response_model=list[CodeSearchResult],
     dependencies=[Depends(per_user_rate_limit("ai"))],
+    tags=["Search"],
+    summary="Semantic code search",
+    description=(
+        "Embeds the query and returns the most similar indexed code chunks "
+        "in this repository, ranked by similarity score (highest first)."
+    ),
+    responses={
+        401: _UNAUTHORIZED,
+        404: _REPO_NOT_FOUND,
+        429: _AI_RATE_LIMITED,
+        502: error_response("The embedding provider or vector store returned an error."),
+        503: error_response("The embedding provider is not configured."),
+    },
 )
 async def search_repository(
     repository_id: UUID,
@@ -485,6 +611,21 @@ async def search_repository(
     "/{repository_id}/debug",
     response_model=DebugResponse,
     dependencies=[Depends(per_user_rate_limit("ai"))],
+    tags=["AI Analysis"],
+    summary="Diagnose a bug from a description",
+    description=(
+        "Retrieves indexed code relevant to the bug description and asks "
+        "the LLM to diagnose the likely root cause, citing sources. "
+        "Returns a fixed explanatory message (still 200) if nothing "
+        "relevant is indexed."
+    ),
+    responses={
+        401: _UNAUTHORIZED,
+        404: _REPO_NOT_FOUND,
+        429: _AI_RATE_LIMITED,
+        502: error_response("The embedding provider, vector store, or LLM provider returned an error."),
+        503: error_response("The embedding provider or the LLM provider is not configured."),
+    },
 )
 async def debug_repository(
     repository_id: UUID,
@@ -554,6 +695,21 @@ async def debug_repository(
     "/{repository_id}/architecture",
     response_model=ArchitectureAnalysisResponse,
     dependencies=[Depends(per_user_rate_limit("ai"))],
+    tags=["AI Analysis"],
+    summary="Generate a high-level architecture overview",
+    description=(
+        "Infers likely components, tech stack, and entry points from the "
+        "repository's file tree and README (no other file contents), and "
+        "asks the LLM to summarize them."
+    ),
+    responses={
+        400: error_response("No indexed files available to analyze (ingestion may not be complete)."),
+        401: _UNAUTHORIZED,
+        404: _REPO_NOT_FOUND,
+        429: _AI_RATE_LIMITED,
+        502: _LLM_UPSTREAM_ERROR,
+        503: _LLM_UNAVAILABLE,
+    },
 )
 async def analyze_repository_architecture(
     repository_id: UUID,
@@ -618,6 +774,18 @@ async def analyze_repository_architecture(
     "/{repository_id}/security-scan",
     response_model=SecurityScanResponse,
     dependencies=[Depends(per_user_rate_limit("ai"))],
+    tags=["AI Analysis"],
+    summary="Run a static security scan",
+    description=(
+        "Runs a local, rule-based static scan (no LLM call) over every "
+        "indexed file's content and returns findings sorted by severity."
+    ),
+    responses={
+        400: error_response("No indexed files available to scan (ingestion may not be complete)."),
+        401: _UNAUTHORIZED,
+        404: _REPO_NOT_FOUND,
+        429: _AI_RATE_LIMITED,
+    },
 )
 async def scan_repository_security(
     repository_id: UUID,
@@ -675,6 +843,21 @@ async def scan_repository_security(
     "/{repository_id}/agent",
     response_model=AgentResponse,
     dependencies=[Depends(per_user_rate_limit("agent"))],
+    tags=["Agent"],
+    summary="Run a multi-step investigation agent",
+    description=(
+        "Runs a tool-using agent (up to `max_steps` tool calls - search "
+        "code, explain/review a file, debug, architecture) toward the "
+        "stated goal, returning a final answer plus the sequence of steps "
+        "it took."
+    ),
+    responses={
+        401: _UNAUTHORIZED,
+        404: _REPO_NOT_FOUND,
+        429: error_response("Agent rate limit exceeded for this user."),
+        502: _LLM_UPSTREAM_ERROR,
+        503: _LLM_UNAVAILABLE,
+    },
 )
 async def run_repository_agent(
     repository_id: UUID,
