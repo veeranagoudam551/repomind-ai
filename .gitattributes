@@ -1,0 +1,11 @@
+# Shell scripts and Dockerfiles must keep LF line endings regardless of
+# the developer's platform - they run inside Linux containers, where a
+# CRLF shebang line breaks with "bad interpreter: No such file or
+# directory". Day 47's backend/docker-entrypoint.sh is the concrete
+# reason this exists: this project is developed on Windows, where
+# core.autocrlf commonly converts LF to CRLF in the working tree (visible
+# throughout this repo's history as git's own "LF will be replaced by
+# CRLF" warnings on every commit touching a text file).
+*.sh text eol=lf
+Dockerfile text eol=lf
+Dockerfile.* text eol=lf

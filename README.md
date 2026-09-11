@@ -306,3 +306,230 @@ and pull request against `main`, as three jobs:
 The e2e job depends on the other two, so an obviously broken push fails
 fast without also paying for browser install + three services. On
 failure, the Playwright HTML report is uploaded as a build artifact.
+
+## Production Deployment
+
+Since Day 47, there's a complete (if generic — no specific cloud target
+is assumed) production deployment path: two Dockerfiles, a Celery
+worker that reuses the backend's image, and an extended
+`docker/docker-compose.yml`. Nothing here changes local development at
+all — see "Local infrastructure" above, which is still the primary,
+actually-used-day-to-day path on this project's own 8 GB RAM dev
+machine.
+
+### Architecture
+
+```
+                    ┌─────────────┐
+  browser  ───────► │  frontend   │  Next.js standalone, port 3000
+                    └──────┬──────┘
+                           │ NEXT_PUBLIC_API_BASE_URL
+                           ▼
+                    ┌─────────────┐
+  reverse   ──────► │     api     │  FastAPI + uvicorn, port 8000
+  proxy              └──────┬──────┘
+  (your own,                │
+   not included)     ┌──────┴───────┬─────────────┐
+                      ▼              ▼             ▼
+                 ┌─────────┐   ┌─────────┐   ┌──────────┐
+                 │postgres │   │  redis  │   │  qdrant  │
+                 └─────────┘   └────┬────┘   └──────────┘
+                                    │
+                              ┌─────┴──────┐
+                              │celery-worker│  same image as api,
+                              └────────────┘  different command
+```
+
+`frontend` and `api` are deployed separately and talk over HTTP;
+neither depends on the other's runtime, only on `NEXT_PUBLIC_API_BASE_URL`
+pointing at wherever `api` actually ends up. No reverse proxy is
+included — TLS termination, domain routing, etc. are deployment-specific
+and deliberately out of scope here, but `api`'s uvicorn is already
+configured to trust `X-Forwarded-*` headers from one (see below).
+
+### Required environment variables
+
+Every variable is documented with its default and which day introduced
+it in [`.env.example`](.env.example) — copy it to `.env` and fill in
+real values. The ones that matter specifically for a production
+deployment, beyond everything already covered elsewhere in this README:
+
+- `ENVIRONMENT=production` — enables the startup guard described under
+  "Production security considerations" below, and disables SQL echo
+  logging regardless of `LOG_LEVEL`.
+- `JWT_SECRET_KEY` — **must** be a real random value in production; the
+  app refuses to start otherwise. Generate one with
+  `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+- `DATABASE_URL` — must not contain the placeholder `changeme` password
+  once `ENVIRONMENT=production`, same reasoning.
+- `CORS_ORIGINS` — set to the real frontend origin(s), comma-separated.
+- `NEXT_PUBLIC_API_BASE_URL` — the frontend's build-time (not
+  runtime — see the frontend Dockerfile) reference to the backend's
+  public URL.
+- `WEB_CONCURRENCY` / `FORWARDED_ALLOW_IPS` — read by
+  `backend/docker-entrypoint.sh`; see `.env.example`'s "Production
+  deployment" section.
+
+### Backend deployment
+
+[`backend/Dockerfile`](backend/Dockerfile) — single-stage `python:3.9-slim`
+(matches the version this project has been built and verified against
+throughout), runs as a non-root user. On start,
+[`backend/docker-entrypoint.sh`](backend/docker-entrypoint.sh) runs
+`alembic upgrade head` (idempotent — safe on every deploy) and then execs:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+  --workers "${WEB_CONCURRENCY:-2}" \
+  --proxy-headers --forwarded-allow-ips="${FORWARDED_ALLOW_IPS:-*}"
+```
+
+No gunicorn — uvicorn's own `--workers` flag already gives multi-process
+concurrency, so adding gunicorn on top would be an unnecessary
+dependency for what it actually buys here. `--proxy-headers` plus
+`--forwarded-allow-ips` is what "runs behind a reverse proxy" actually
+means in practice: without it, every request would appear to originate
+from the proxy's own IP, which would also silently break Day 46's
+per-IP `auth_register`/`auth_login` rate limiting (everyone behind the
+proxy would share one counter).
+
+### Frontend deployment
+
+[`frontend/Dockerfile`](frontend/Dockerfile) — multi-stage, built on
+Next's own `output: "standalone"` (`next.config.ts`), which traces only
+the files actually needed to run in production (including select
+`node_modules`) into `.next/standalone`; the final image needs neither
+the full `node_modules` install nor the rest of the source tree. Base
+image is `node:20-slim`, not alpine — this project's dependencies
+include native Rust bindings (Tailwind v4's oxide engine, lightningcss)
+published as per-platform prebuilt binaries, and glibc has the
+broadest, best-tested coverage for those.
+
+The one real gotcha: `NEXT_PUBLIC_API_BASE_URL` is inlined into the
+compiled output by Next.js itself at *build* time, not read from the
+container's environment at *start* time — so it has to be a Docker
+build arg, not just a runtime variable, or the running frontend would
+silently keep whatever value was baked in when the image was built:
+
+```bash
+docker build --build-arg NEXT_PUBLIC_API_BASE_URL=https://api.example.com \
+  -t repomind-frontend frontend/
+```
+
+Verified locally without Docker (see "Testing" below): a real
+`npm run build` succeeds and produces `.next/standalone/server.js`,
+exercising the exact build step the Dockerfile's builder stage runs.
+
+### Celery worker deployment
+
+No separate image — [`docker/docker-compose.yml`](docker/docker-compose.yml)'s
+`celery-worker` service builds from the *same* `backend/Dockerfile`,
+overrides its `ENTRYPOINT` (which is api-specific: migrations + uvicorn)
+to empty, and runs:
+
+```bash
+celery -A app.core.celery_app worker --loglevel=info
+```
+
+No `--pool=solo` — that's Day 34's Windows-only workaround for the lack
+of `os.fork()`; Linux's default `prefork` pool works as-is inside a
+container (same reasoning Day 44's CI already established for the
+worker it starts there). Uses the exact same Redis broker config
+(`REDIS_URL`) and sees the exact same rate-limiting settings as `api`
+(Day 46's config is a Redis-backed check inside request handling, not
+something the worker itself needs to know about — it just needs the
+same `REDIS_URL` to reach the same Redis).
+
+### PostgreSQL, Redis, and Qdrant
+
+Same requirements as local development — see "Local infrastructure"
+above for what each is used for. In production, run them as managed
+services or long-lived containers with real persistent volumes/backups;
+`docker/docker-compose.yml`'s `postgres`/`redis`/`qdrant` services are
+adequate for a small, single-host deployment but don't include backup
+automation, replication, or TLS between services — add those
+separately for anything beyond that scale.
+
+### Docker Compose deployment
+
+The same file Day 40 introduced for local infra now also represents
+the complete stack, gated behind a Compose profile so the original
+infra-only behavior is completely unchanged by default:
+
+```bash
+# Infra only (unchanged since Day 40):
+docker compose -f docker/docker-compose.yml up -d
+
+# The complete stack - postgres, redis, qdrant, api, celery-worker, frontend:
+docker compose -f docker/docker-compose.yml --env-file .env --profile full up -d
+```
+
+Secrets (`JWT_SECRET_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+`GITHUB_TOKEN`) have no fallback in the `full` profile's services,
+unlike `POSTGRES_PASSWORD`'s local-dev-only `changeme` default — they
+must come from your real `.env` (`--env-file .env`, since Compose only
+auto-loads a `.env` file next to the compose file, not the project
+root's).
+
+### Health / readiness checks
+
+- `GET /health` — liveness: is the process up at all. No dependency
+  checks, no auth needed.
+- `GET /health/ready` — readiness (Day 47): can the process actually
+  serve requests right now. Checks Postgres reachability only (with an
+  explicit timeout, so an unreachable — not just erroring — database
+  can't hang the check), deliberately not Redis/Qdrant: both already
+  degrade gracefully when unreachable (Days 38-43 — ingestion fails
+  fast into `status: "failed"`, rate limiting fails open, search/chat
+  map to a clean `502`/`503`), so reporting "not ready" for either would
+  flag a condition that doesn't actually block most requests. Neither
+  endpoint ever includes a connection string, credential, or other
+  infrastructure detail in its response.
+
+`docker/docker-compose.yml`'s `api`/`celery-worker`/`frontend` services
+all have their own `healthcheck:` blocks, each probing with a tool
+already guaranteed present in that image rather than installing one
+just for this (Python's `urllib` for `api`, Node's `http` module for
+`frontend`, `celery inspect ping` for the worker) — the same "no
+guaranteed shell tools" reasoning Day 40 already established for why
+Qdrant's own service has no healthcheck at all.
+
+### Production security considerations
+
+- **Insecure defaults can't reach production silently.**
+  `app/core/config.py`'s `Settings` refuses to construct at all if
+  `ENVIRONMENT=production` and `JWT_SECRET_KEY` is empty or still the
+  placeholder default, or `DATABASE_URL` still contains the placeholder
+  `changeme` password — the app won't start, rather than starting with
+  a forgeable JWT secret or a guessable database password. `CORS_ORIGINS`
+  left at its localhost default logs a warning (not a hard failure — a
+  same-origin/reverse-proxy setup may not need CORS at all).
+- **Secrets only ever come from environment variables** — never
+  hardcoded, and `docker/docker-compose.yml`'s `full` profile services
+  give real secrets no local-dev-style fallback default.
+- **Logging was audited, not just assumed safe**: SQL echo logging
+  (`database.py`) is already gated to `ENVIRONMENT=development` only, so
+  production never logs full queries/parameters. No code anywhere logs
+  an `Authorization` header, JWT, or password — checked directly rather
+  than inferred, since this project has repeatedly found real bugs by
+  actually checking rather than assuming (Days 38-45's whole run of
+  cross-platform/connection-handling fixes).
+- **`/health`/`/health/ready` never leak infrastructure details** — no
+  connection string, credential, or hostname in either response, by
+  design and covered by tests (`tests/test_health.py`).
+- Everything from Day 46 (per-user/per-IP rate limiting) and Days 38-43
+  (fail-fast/graceful-degradation for every external dependency) applies
+  unchanged in production — none of it is a dev-only behavior.
+
+### Native/WSL fallback for resource-constrained machines
+
+Nothing above requires Docker. Every piece — the backend, the Celery
+worker, the frontend, Postgres, Redis, Qdrant — can run exactly as
+"Getting Started" and "Local infrastructure" already document, just
+with `ENVIRONMENT=production`-appropriate values in `.env` and a real
+reverse proxy (nginx, Caddy, Traefik, your cloud provider's load
+balancer — anything that can set `X-Forwarded-*` headers) in front of
+`uvicorn`/`next start`. This is not a hypothetical: it's the same
+Option B this project's own README has documented since Day 40, for
+the same reason — Docker Desktop's resource overhead is a real cost on
+an 8 GB RAM machine, in production every bit as much as in local dev.

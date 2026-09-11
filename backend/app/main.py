@@ -10,6 +10,19 @@ from app.api.repositories import router as repositories_router
 from app.core.config import settings
 
 logging.basicConfig(level=settings.log_level)
+logger = logging.getLogger(__name__)
+
+# Day 47: unlike the JWT/database checks in config.py (hard failures - a
+# forgeable secret or a guessable DB password are never acceptable), a
+# stale CORS origin is a warning, not a refusal to start: a legitimate
+# same-origin/reverse-proxy setup might not need CORS configured at all,
+# so this can't tell "misconfigured" from "genuinely doesn't apply" the
+# way the other two checks can.
+if settings.environment == "production" and settings.cors_origins == "http://localhost:3000":
+    logger.warning(
+        "CORS_ORIGINS is still the localhost default in a production "
+        "environment - set it to the real frontend origin(s)."
+    )
 
 app = FastAPI(
     title="RepoMind AI",

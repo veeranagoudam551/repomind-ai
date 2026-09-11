@@ -1,25 +1,62 @@
-# Local infrastructure for RepoMind AI: PostgreSQL, Redis, and Qdrant.
+# RepoMind AI - Docker Compose.
 #
-# This is Option A of the two setups documented in the root README's
-# "Local infrastructure" section - Option B (native Postgres + WSL2
-# Redis + a standalone Qdrant binary) is the one this project has
-# actually been built and verified against day to day, since Docker
-# Desktop's own resource overhead is a real problem on an 8 GB RAM
-# laptop. Neither the backend nor any app code depends on Docker
-# itself: everything here just puts a normal Postgres/Redis/Qdrant on
-# their usual localhost ports, same as Option B does by other means.
+# Two modes, same file (Day 47 extends Day 40 rather than replacing it):
 #
-# Usage (from the repo root):
 #   docker compose -f docker/docker-compose.yml up -d
-#   docker compose -f docker/docker-compose.yml down        # stop
-#   docker compose -f docker/docker-compose.yml down -v     # stop + delete all local data
+#     Infra only - Postgres, Redis, Qdrant. Exactly Day 40's original
+#     behavior, byte-for-byte unchanged: the api/celery-worker/frontend
+#     services below are gated behind the "full" profile, so a plain
+#     `up` never touches them. This is Option A of the two local-dev
+#     setups documented in the root README's "Local infrastructure"
+#     section - Option B (native Postgres + WSL2 Redis + a standalone
+#     Qdrant binary) is the one this project has actually been built
+#     and verified against day to day, since Docker Desktop's own
+#     resource overhead is a real problem on an 8 GB RAM laptop.
+#
+#   docker compose -f docker/docker-compose.yml --profile full up -d
+#     The complete production-style stack: the three infra services
+#     above, plus api (FastAPI, gunicorn-free multi-worker uvicorn),
+#     celery-worker (the same image as api, different command), and
+#     frontend (Next.js standalone). This is what "production
+#     deployment" means for this project without a specific cloud
+#     target chosen - see README's "Production deployment" section for
+#     what each service actually needs.
+#
+#   docker compose -f docker/docker-compose.yml down            # stop
+#   docker compose -f docker/docker-compose.yml down -v          # stop + delete all local data
 #
 # Credentials/ports below match .env.example's defaults exactly, so a
-# fresh `cp backend/.env.example .env` needs no edits to work against
-# these containers. If you've changed POSTGRES_PASSWORD/etc. in your
-# own .env, pass it through explicitly (Compose only auto-loads a
-# .env file next to this one, not the project root's):
-#   docker compose -f docker/docker-compose.yml --env-file ../.env up -d
+# fresh `cp .env.example .env` needs no edits to work against these
+# containers *in infra-only mode*. The `full` profile's api/celery-worker
+# services deliberately do NOT default JWT_SECRET_KEY/OPENAI_API_KEY/
+# ANTHROPIC_API_KEY/GITHUB_TOKEN the way POSTGRES_PASSWORD does - those
+# are real secrets, not local-dev conveniences, and app/core/config.py's
+# own startup guard refuses to run with ENVIRONMENT=production and a
+# still-placeholder JWT_SECRET_KEY or DATABASE_URL password (Day 47).
+# Pass your real .env through explicitly (Compose only auto-loads a .env
+# file next to this one, not the project root's):
+#   docker compose -f docker/docker-compose.yml --env-file ../.env --profile full up -d
+
+# Shared by api and celery-worker (same image, same config, different
+# command) - a YAML anchor instead of duplicating twelve env vars in two
+# places and letting them drift out of sync. `x-` prefixed top-level keys
+# are a Compose "extension field": ignored by Compose itself except as
+# an anchor/alias source.
+x-backend-env: &backend-env
+  ENVIRONMENT: ${ENVIRONMENT:-production}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-repomind}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-repomind}
+  REDIS_URL: redis://redis:6379/0
+  QDRANT_HOST: qdrant
+  QDRANT_PORT: 6333
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  # No fallback for these four - real secrets, not local-dev conveniences.
+  # An unset JWT_SECRET_KEY resolves to an empty string here (Compose's
+  # ${VAR} with no :-default), which app/core/config.py's startup guard
+  # (Day 47) refuses to run with once ENVIRONMENT=production.
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+  GITHUB_TOKEN: ${GITHUB_TOKEN}
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
 
 services:
   postgres:
@@ -69,6 +106,107 @@ services:
     # container without adding one. `docker compose ps` will still show
     # it as "running"; check readiness from the host instead, e.g.
     # `curl http://localhost:6333/collections`.
+
+  # --- Everything below is the "full" profile (Day 47) ---
+
+  api:
+    profiles: ["full"]
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: repomind-api
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    healthcheck:
+      # Same "no guaranteed shell tools" situation as Qdrant above, but
+      # this image genuinely does have one guaranteed interpreter: itself.
+      # Probes app/api/health.py's own liveness endpoint with the stdlib,
+      # no extra package installed just for this.
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  celery-worker:
+    profiles: ["full"]
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: repomind-celery-worker
+    restart: unless-stopped
+    # Overrides the image's own ENTRYPOINT (migrations + uvicorn) entirely -
+    # same image as api, a different role. No --pool=solo: that's Day 34's
+    # Windows-only workaround for the lack of os.fork(); Linux's default
+    # prefork pool works as-is inside the container (same reasoning Day
+    # 44's CI already established for the worker it starts).
+    entrypoint: []
+    command: celery -A app.core.celery_app worker --loglevel=info
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.core.celery_app", "inspect", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    profiles: ["full"]
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked in at build time (Next.js inlines NEXT_PUBLIC_* vars into
+        # the compiled output - see frontend/Dockerfile) - this is the one
+        # setting here that can't just be an ordinary runtime environment
+        # variable. Defaults to reaching the api service through the port
+        # published on the host, matching how a developer's own browser
+        # (outside the Compose network entirely) needs to reach it -
+        # override for a real deployment's actual public backend URL.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    container_name: repomind-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
 volumes:
   postgres_data:

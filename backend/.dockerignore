@@ -1,0 +1,18 @@
+# Keeps the build context (and the final image) small and avoids ever
+# baking local secrets/dev artifacts into an image - matches the
+# project-root .gitignore's own Python/env section.
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+tests/
+.env
+.env.*
+*.sqlite3
+.git/
+.gitignore

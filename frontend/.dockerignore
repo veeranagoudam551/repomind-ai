@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+build/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+.env
+.env.local
+.env.*.local
+tests-e2e/
+playwright-report/
+test-results/
+.git/
+.gitignore

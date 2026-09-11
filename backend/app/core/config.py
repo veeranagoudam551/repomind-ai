@@ -1,4 +1,12 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The two defaults above that are actual secrets, not just convenience
+# values - fine to ship as defaults (development/tests need *something*
+# to boot with), but never fine to still be in place once ENVIRONMENT
+# says this is a real deployment. Day 47.
+_PLACEHOLDER_JWT_SECRET_KEY = "changeme-generate-a-long-random-secret"
+_PLACEHOLDER_DATABASE_URL_MARKER = ":changeme@"
 
 
 class Settings(BaseSettings):
@@ -54,6 +62,38 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def _reject_insecure_production_defaults(self) -> "Settings":
+        # Refuses to start rather than silently running production traffic
+        # through a forgeable JWT secret or a guessable database password -
+        # cheap to check once at startup, expensive to discover any other
+        # way. Development/tests are untouched: these two values existing
+        # as defaults at all is what lets a fresh checkout boot with zero
+        # configuration, per every "cp .env.example .env" step in the
+        # README - the check only fires once ENVIRONMENT says this is real.
+        if self.environment != "production":
+            return self
+
+        problems = []
+        if not self.jwt_secret_key or self.jwt_secret_key == _PLACEHOLDER_JWT_SECRET_KEY:
+            # Empty, not just the placeholder, matters here specifically
+            # because of how Docker Compose substitutes an unset variable
+            # with no fallback (${VAR}, no :-default) - it resolves to an
+            # empty string rather than leaving the variable unset, which
+            # would otherwise have fallen through to this same field's
+            # class default (the placeholder, already caught above) instead.
+            problems.append("JWT_SECRET_KEY is missing or still the placeholder default")
+        if _PLACEHOLDER_DATABASE_URL_MARKER in self.database_url:
+            problems.append("DATABASE_URL still has the placeholder 'changeme' password")
+
+        if problems:
+            raise ValueError(
+                "Refusing to start with ENVIRONMENT=production and insecure "
+                "defaults still in place: " + "; ".join(problems) + ". Set "
+                "real values via environment variables before deploying."
+            )
+        return self
 
 
 settings = Settings()
