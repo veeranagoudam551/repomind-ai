@@ -340,9 +340,17 @@ machine.
                               └────────────┘  different command
 ```
 
-`frontend` and `api` are deployed separately and talk over HTTP;
-neither depends on the other's runtime, only on `NEXT_PUBLIC_API_BASE_URL`
-pointing at wherever `api` actually ends up. No reverse proxy is
+`frontend` and `api` are deployed separately and talk over HTTP; all of
+that traffic is server-side (`frontend`'s own Next.js server calling
+`api`, not the end user's browser calling it directly), so what matters
+is `frontend`'s build getting baked with a URL that's actually reachable
+*from inside the frontend container*, not from a developer's host
+machine or browser — `docker/docker-compose.yml`'s `full` profile
+handles this with its own `COMPOSE_FRONTEND_API_BASE_URL` variable
+(defaulting to the Compose-internal `http://api:8000`) precisely so it
+doesn't collide with `NEXT_PUBLIC_API_BASE_URL`, which stays whatever
+native/WSL development needs instead — see "Frontend deployment" below
+for why conflating the two was a real bug. No reverse proxy is
 included — TLS termination, domain routing, etc. are deployment-specific
 and deliberately out of scope here, but `api`'s uvicorn is already
 configured to trust `X-Forwarded-*` headers from one (see below).
@@ -416,7 +424,24 @@ docker build --build-arg NEXT_PUBLIC_API_BASE_URL=https://api.example.com \
   -t repomind-frontend frontend/
 ```
 
-Verified locally without Docker (see "Testing" below): a real
+A second, sharper version of that same gotcha (Day 47's review):
+building this image as part of `docker/docker-compose.yml`'s `full`
+profile must **not** reuse `.env`'s `NEXT_PUBLIC_API_BASE_URL` directly
+— that variable is correct for native/WSL development (frontend and
+backend as separate processes on the same host, where `localhost:8000`
+really does reach the backend), but every API call this app makes
+happens server-side, inside whichever process is running the frontend.
+Built with `localhost:8000` baked in and run as its own Compose
+container, the frontend would try to reach `localhost:8000` *from
+inside itself* — nothing listens there, since `api` is a separate
+container — and every Server Component and Server Action would fail
+silently. `docker-compose.yml` avoids this with its own
+`COMPOSE_FRONTEND_API_BASE_URL` variable instead, defaulting to the
+Compose-internal `http://api:8000` so this works correctly with zero
+configuration; see `.env.example`'s comment on that variable, and the
+`frontend` service's own `build.args` comment, for the full reasoning.
+
+Verified locally without Docker (see "Running tests" above): a real
 `npm run build` succeeds and produces `.next/standalone/server.js`,
 exercising the exact build step the Dockerfile's builder stage runs.
 

@@ -36,6 +36,13 @@
 # Pass your real .env through explicitly (Compose only auto-loads a .env
 # file next to this one, not the project root's):
 #   docker compose -f docker/docker-compose.yml --env-file ../.env --profile full up -d
+#
+# NEXT_PUBLIC_API_BASE_URL in that same .env stays whatever native/WSL
+# development needs (http://localhost:8000 - frontend and backend as
+# separate host processes there). The `full` profile's frontend build
+# does NOT reuse that value - see the frontend service's own `build.args`
+# comment below for why reusing it was a real bug, and
+# COMPOSE_FRONTEND_API_BASE_URL for the (normally unnecessary) override.
 
 # Shared by api and celery-worker (same image, same config, different
 # command) - a YAML anchor instead of duplicating twelve env vars in two
@@ -131,13 +138,17 @@ services:
       # Same "no guaranteed shell tools" situation as Qdrant above, but
       # this image genuinely does have one guaranteed interpreter: itself.
       # Probes app/api/health.py's own liveness endpoint with the stdlib,
-      # no extra package installed just for this.
+      # no extra package installed just for this. Explicit timeout=3 on
+      # the probe itself (Day 47's review) rather than relying only on
+      # Docker's outer `timeout: 5s` below to kill a stuck process -
+      # bounded from the inside too, consistent with the rest of this
+      # project's "don't trust an unconfigured client timeout" pattern.
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)",
         ]
       interval: 10s
       timeout: 5s
@@ -156,8 +167,15 @@ services:
     # Windows-only workaround for the lack of os.fork(); Linux's default
     # prefork pool works as-is inside the container (same reasoning Day
     # 44's CI already established for the worker it starts).
+    #
+    # Exec-array form, not a plain string (Day 47's review): a plain
+    # string is run via `sh -c "..."`, leaving celery as a child of that
+    # shell rather than PID 1 - correct SIGTERM handling would then
+    # depend on dash's own "last simple command" exec optimization
+    # rather than being guaranteed, the same reason docker-entrypoint.sh
+    # uses `exec` explicitly instead of relying on it implicitly.
     entrypoint: []
-    command: celery -A app.core.celery_app worker --loglevel=info
+    command: ["celery", "-A", "app.core.celery_app", "worker", "--loglevel=info"]
     environment:
       <<: *backend-env
     depends_on:
@@ -181,13 +199,24 @@ services:
       dockerfile: Dockerfile
       args:
         # Baked in at build time (Next.js inlines NEXT_PUBLIC_* vars into
-        # the compiled output - see frontend/Dockerfile) - this is the one
-        # setting here that can't just be an ordinary runtime environment
-        # variable. Defaults to reaching the api service through the port
-        # published on the host, matching how a developer's own browser
-        # (outside the Compose network entirely) needs to reach it -
-        # override for a real deployment's actual public backend URL.
-        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+        # the compiled output - see frontend/Dockerfile), so this can't
+        # just be an ordinary runtime environment variable.
+        #
+        # Deliberately NOT sourced from NEXT_PUBLIC_API_BASE_URL (the var
+        # .env.example documents for native/WSL dev, where the frontend
+        # and backend are separate host processes and localhost:8000 is
+        # correct) - reusing that same variable here was a real bug (Day
+        # 47's review): every call this app makes to the backend happens
+        # server-side, inside this frontend *container*, where
+        # localhost:8000 resolves to the frontend container itself, not
+        # api - nothing listens there, and the whole app fails silently.
+        # COMPOSE_FRONTEND_API_BASE_URL is a separate, compose-only
+        # override (see .env.example) so the two cases can't collide:
+        # leave it unset and this defaults to the Compose-internal
+        # service name, correctly reachable from inside this container;
+        # set it only if the full profile's frontend needs to reach some
+        # other backend URL entirely (e.g. a real public domain).
+        NEXT_PUBLIC_API_BASE_URL: ${COMPOSE_FRONTEND_API_BASE_URL:-http://api:8000}
     container_name: repomind-frontend
     restart: unless-stopped
     ports:
