@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
+from app.core.rate_limit import per_user_rate_limit
 from app.models.code_chunk import CodeChunk
 from app.models.conversation import Conversation
 from app.models.message import Message, MessageRole
@@ -159,7 +160,11 @@ async def list_messages(
     return [await _to_message_read(db, message) for message in result.all()]
 
 
-@router.post("/conversations/{conversation_id}/messages", response_model=MessageRead)
+@router.post(
+    "/conversations/{conversation_id}/messages",
+    response_model=MessageRead,
+    dependencies=[Depends(per_user_rate_limit("ai"))],
+)
 async def send_message(
     conversation_id: UUID,
     payload: MessageCreate,

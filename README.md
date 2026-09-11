@@ -244,6 +244,30 @@ without calling the LLM. `GET /conversations/{id}/messages` replays
 the full thread with each past assistant reply's sources resolved the
 same way.
 
+### Rate limiting
+
+Since Day 46, resource-intensive endpoints are rate limited per
+authenticated user via a Redis-backed fixed-window counter (reuses
+`REDIS_URL`; if Redis itself is unreachable, requests are allowed
+through rather than the app failing closed). Exceeding a limit returns
+`429` with a `detail` message naming the limit and window. All limits
+are configurable via `.env` (see `.env.example`'s "Rate limiting"
+section) — defaults:
+
+| Scope | Endpoints | Default |
+|---|---|---|
+| `ingestion` | `POST /repositories`, `.../reindex` | 20/hour/user |
+| `ai` | search, chat, debug, architecture, security-scan, file explain/review | 20/minute/user |
+| `agent` | `POST /repositories/{id}/agent` | 5/minute/user |
+| `auth_register` | `POST /auth/register` | 30/hour/IP |
+| `auth_login` | `POST /auth/login` | 40/hour/IP |
+
+`auth_register`/`auth_login` are IP-based (there's no authenticated
+user yet); every other scope is per-user, so one user's usage never
+affects another's. `RATE_LIMIT_ENABLED=false` disables all of them.
+Set very low for local testing: `curl` a protected endpoint repeatedly
+and confirm the `429` after the configured count.
+
 ### Running tests
 
 ```bash

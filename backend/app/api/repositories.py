@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.rate_limit import per_user_rate_limit
 from app.models.code_chunk import CodeChunk
 from app.models.repository import Repository, RepositoryStatus
 from app.models.repository_file import RepositoryFile
@@ -114,7 +115,12 @@ ARCHITECTURE_SYSTEM_PROMPT = (
 )
 
 
-@router.post("", response_model=RepositoryRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=RepositoryRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(per_user_rate_limit("ingestion"))],
+)
 async def create_repository(
     payload: RepositoryCreate,
     db: AsyncSession = Depends(get_db),
@@ -262,7 +268,11 @@ IN_PROGRESS_STATUSES = (
 )
 
 
-@router.post("/{repository_id}/reindex", response_model=RepositoryRead)
+@router.post(
+    "/{repository_id}/reindex",
+    response_model=RepositoryRead,
+    dependencies=[Depends(per_user_rate_limit("ingestion"))],
+)
 async def reindex_repository(
     repository_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -336,7 +346,11 @@ async def _get_file_content_for_llm(
     return repository_file, reconstruct_file_content(chunks)
 
 
-@router.post("/{repository_id}/files/{file_id}/explain", response_model=ExplainFileResponse)
+@router.post(
+    "/{repository_id}/files/{file_id}/explain",
+    response_model=ExplainFileResponse,
+    dependencies=[Depends(per_user_rate_limit("ai"))],
+)
 async def explain_repository_file(
     repository_id: UUID,
     file_id: UUID,
@@ -365,7 +379,11 @@ async def explain_repository_file(
     return ExplainFileResponse(file_path=repository_file.file_path, explanation=explanation)
 
 
-@router.post("/{repository_id}/files/{file_id}/review", response_model=ReviewFileResponse)
+@router.post(
+    "/{repository_id}/files/{file_id}/review",
+    response_model=ReviewFileResponse,
+    dependencies=[Depends(per_user_rate_limit("ai"))],
+)
 async def review_repository_file(
     repository_id: UUID,
     file_id: UUID,
@@ -412,7 +430,11 @@ async def list_repository_chunks(
     return result.all()
 
 
-@router.post("/{repository_id}/search", response_model=list[CodeSearchResult])
+@router.post(
+    "/{repository_id}/search",
+    response_model=list[CodeSearchResult],
+    dependencies=[Depends(per_user_rate_limit("ai"))],
+)
 async def search_repository(
     repository_id: UUID,
     payload: RepositorySearchRequest,
@@ -459,7 +481,11 @@ async def search_repository(
     return results
 
 
-@router.post("/{repository_id}/debug", response_model=DebugResponse)
+@router.post(
+    "/{repository_id}/debug",
+    response_model=DebugResponse,
+    dependencies=[Depends(per_user_rate_limit("ai"))],
+)
 async def debug_repository(
     repository_id: UUID,
     payload: DebugRequest,
@@ -524,7 +550,11 @@ async def debug_repository(
     return DebugResponse(diagnosis=diagnosis, sources=sources)
 
 
-@router.post("/{repository_id}/architecture", response_model=ArchitectureAnalysisResponse)
+@router.post(
+    "/{repository_id}/architecture",
+    response_model=ArchitectureAnalysisResponse,
+    dependencies=[Depends(per_user_rate_limit("ai"))],
+)
 async def analyze_repository_architecture(
     repository_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -584,7 +614,11 @@ async def analyze_repository_architecture(
     )
 
 
-@router.post("/{repository_id}/security-scan", response_model=SecurityScanResponse)
+@router.post(
+    "/{repository_id}/security-scan",
+    response_model=SecurityScanResponse,
+    dependencies=[Depends(per_user_rate_limit("ai"))],
+)
 async def scan_repository_security(
     repository_id: UUID,
     db: AsyncSession = Depends(get_db),
@@ -637,7 +671,11 @@ async def scan_repository_security(
     return SecurityScanResponse(findings=findings, files_scanned=files_scanned)
 
 
-@router.post("/{repository_id}/agent", response_model=AgentResponse)
+@router.post(
+    "/{repository_id}/agent",
+    response_model=AgentResponse,
+    dependencies=[Depends(per_user_rate_limit("agent"))],
+)
 async def run_repository_agent(
     repository_id: UUID,
     payload: AgentRequest,

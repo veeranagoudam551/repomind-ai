@@ -32,6 +32,25 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-5"
     redis_url: str = "redis://localhost:6379/0"
 
+    # Rate limiting (Day 46) - a Redis-backed fixed-window counter per
+    # (scope, identifier). Each scope below protects a group of endpoints
+    # of similar cost; see app/core/rate_limit.py. Auth's windows are
+    # deliberately an hour, not a minute: it's IP-scoped (unauthenticated),
+    # and this project's own e2e suite registers ~20 users per full CI run
+    # from a single runner IP - a short window sized for a single user's
+    # realistic usage would make the test suite itself flaky.
+    rate_limit_enabled: bool = True
+    rate_limit_ingestion_limit: int = 20
+    rate_limit_ingestion_window_seconds: int = 3600
+    rate_limit_ai_limit: int = 20
+    rate_limit_ai_window_seconds: int = 60
+    rate_limit_agent_limit: int = 5
+    rate_limit_agent_window_seconds: int = 60
+    rate_limit_auth_register_limit: int = 30
+    rate_limit_auth_register_window_seconds: int = 3600
+    rate_limit_auth_login_limit: int = 40
+    rate_limit_auth_login_window_seconds: int = 3600
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

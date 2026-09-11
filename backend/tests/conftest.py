@@ -83,6 +83,20 @@ def _stub_vector_store(monkeypatch):
     monkeypatch.setattr("app.services.vector_store.delete_by_repository", _noop_delete)
 
 
+@pytest.fixture(autouse=True)
+def _disable_rate_limiting(monkeypatch):
+    # Day 46: rate limiting is a Redis-backed cross-cutting concern that
+    # now runs on nearly every endpoint these tests exercise. Disabling it
+    # here by default - same "stub the external dependency" reasoning as
+    # ingestion/vector-store above - means the other ~160 tests in this
+    # suite stay exactly as fast and deterministic as before, with no
+    # dependence on a reachable Redis and no risk of one test's requests
+    # tripping a limit meant for a different test. tests/test_rate_limit.py
+    # explicitly re-enables it (monkeypatch.setattr(settings,
+    # "rate_limit_enabled", True)) to test the real behavior in isolation.
+    monkeypatch.setattr("app.core.config.settings.rate_limit_enabled", False)
+
+
 @pytest_asyncio.fixture
 async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
     session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
