@@ -8,8 +8,10 @@ from app.api.conversations import router as conversations_router
 from app.api.health import router as health_router
 from app.api.repositories import router as repositories_router
 from app.core.config import settings
+from app.core.logging_config import configure_logging
+from app.core.request_id import RequestIDMiddleware
 
-logging.basicConfig(level=settings.log_level)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 # Day 47: unlike the JWT/database checks in config.py (hard failures - a
@@ -37,6 +39,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Added last so it runs first (outermost) - every response, including
+# ones CORS or routing itself rejects, still gets an X-Request-ID header,
+# a logged request summary, and (app.core.request_id) a safe generic 500
+# for any exception nothing else handled.
+app.add_middleware(RequestIDMiddleware)
 
 app.include_router(health_router)
 app.include_router(auth_router)

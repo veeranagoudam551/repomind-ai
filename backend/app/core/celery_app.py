@@ -16,10 +16,23 @@ On native Windows, run the worker with `--pool=solo` (the default
 """
 
 from celery import Celery
+from celery.signals import setup_logging
 
 from app.core.config import settings
+from app.core.logging_config import configure_logging
 
 celery_app = Celery("repomind", broker=settings.redis_url)
+
+
+@setup_logging.connect
+def _configure_worker_logging(**kwargs) -> None:
+    # Connecting any receiver to this signal tells Celery to skip its own
+    # logging setup entirely (documented Celery behavior) - so task logs
+    # (e.g. repository_ingestion.py's logger.exception on failure) get
+    # this project's same request_id-aware JSON/text formatting (Day 48)
+    # instead of Celery's own format, with no separate config to drift
+    # out of sync with the API's.
+    configure_logging()
 celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
