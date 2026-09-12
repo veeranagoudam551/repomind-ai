@@ -229,3 +229,76 @@ jobs:
           name: playwright-report
           path: frontend/playwright-report/
           retention-days: 7
+
+  docker:
+    name: Docker build validation
+    runs-on: ubuntu-latest
+    # No `needs:` (Day 53) - independent of backend/frontend/e2e above on
+    # purpose, so a Dockerfile/build-context regression is caught exactly
+    # as fast as an application-level one, not gated behind them. This
+    # job builds nothing the other jobs run - it exists because, before
+    # today, neither Dockerfile had ever actually been built by anyone or
+    # anything, only reviewed statically (Days 47-53's own audits).
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Two separate targets (Day 51): the default "production" target
+      # must never install fastembed's ~150MB dependency tree, and
+      # "with-local-embedding" must build cleanly with it. Building both
+      # is the actual point of this job - a target-name typo or a broken
+      # COPY in either would previously have gone unnoticed until someone
+      # built it by hand for the first time.
+      - name: Build backend image (production target)
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          target: production
+          push: false
+          tags: repomind-backend:ci-production-${{ github.run_id }}
+          cache-from: type=gha,scope=backend-production
+          cache-to: type=gha,mode=max,scope=backend-production
+
+      - name: Build backend image (with-local-embedding target)
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          target: with-local-embedding
+          push: false
+          tags: repomind-backend:ci-local-embedding-${{ github.run_id }}
+          cache-from: type=gha,scope=backend-local-embedding
+          cache-to: type=gha,mode=max,scope=backend-local-embedding
+
+      # NEXT_PUBLIC_API_BASE_URL is public, build-time-only configuration
+      # (never a secret - Next.js inlines it into the JavaScript shipped
+      # to the browser). Set to the same value docker-compose.yml's `full`
+      # profile actually builds with by default
+      # (COMPOSE_FRONTEND_API_BASE_URL's own default) rather than the
+      # Dockerfile's bare-build fallback (http://localhost:8000), so this
+      # exercises the real Compose deployment path, not a different one.
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: false
+          tags: repomind-frontend:ci-${{ github.run_id }}
+          build-args: |
+            NEXT_PUBLIC_API_BASE_URL=http://api:8000
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      # Config-only, never `up` - confirms docker-compose.yml itself is
+      # valid and every ${VAR:-default}/profile/target reference resolves
+      # without starting anything. JWT_SECRET_KEY gets an obviously-fake,
+      # CI-only placeholder purely to avoid Compose's "variable not set"
+      # warning for the one var with no :-default; GITHUB_TOKEN/
+      # OPENAI_API_KEY/ANTHROPIC_API_KEY are deliberately left unset, same
+      # reasoning as the backend/e2e jobs above - genuinely optional at
+      # this layer, and an unset one resolves to an empty string (a
+      # warning, not a failure), so there is nothing secret to print.
+      - name: Validate docker-compose.yml (full profile)
+        env:
+          JWT_SECRET_KEY: ci-docker-config-validation-placeholder
+        run: docker compose -f docker/docker-compose.yml --profile full config
