@@ -334,6 +334,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
       # `--wait` blocks until every service with a healthcheck reports
       # healthy - postgres, redis, api, celery-worker, frontend - or, for
       # qdrant (no healthcheck by design, see docker-compose.yml's own
@@ -362,6 +368,35 @@ jobs:
             --frontend-url http://localhost:3000 \
             --api-url http://localhost:8000 \
             --timeout 10
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      # A real browser (running on this runner, not inside any container -
+      # see playwright.docker.config.ts) driving the actual containerized
+      # frontend on its published port, which in turn talks to the actual
+      # containerized FastAPI/Postgres/Redis - the one thing the plain GET
+      # requests above can't prove: that a full user-facing flow (register,
+      # add a repository, view it, log out) works through the real
+      # production-style stack, not a mocked or host-process one. Kept to a
+      # single small spec, not the full tests-e2e/ suite - see
+      # tests-e2e-docker/docker-smoke.spec.ts.
+      - name: Run production-like Docker E2E test
+        working-directory: frontend
+        run: npx playwright test --config=playwright.docker.config.ts
+
+      - name: Upload Docker E2E Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-e2e-playwright-report
+          path: frontend/playwright-report-docker/
+          retention-days: 7
 
       # Always, not just on failure - a startup-error review is useful
       # for a human reading a passing run too, not only a post-mortem on
