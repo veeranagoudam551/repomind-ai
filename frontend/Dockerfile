@@ -37,14 +37,19 @@ RUN npm run build
 FROM node:20-slim AS runner
 WORKDIR /app
 
-RUN useradd --create-home --uid 1000 nextjs
+# No `useradd` here (Day 53's review, GitHub Actions run #10 - the
+# actual failure a real `docker build` had never been run before this):
+# node:20-slim already creates a `node` user at uid/gid 1000, so adding
+# another user at that same uid fails outright (`useradd`: exit code 4,
+# "UID not unique"). Reuse the image's own user instead of colliding with
+# it.
 ENV NODE_ENV=production
 
-COPY --from=builder --chown=nextjs:nextjs /app/public ./public
-COPY --from=builder --chown=nextjs:nextjs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nextjs /app/.next/static ./.next/static
+COPY --from=builder --chown=node:node /app/public ./public
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 
-USER nextjs
+USER node
 
 EXPOSE 3000
 ENV PORT=3000
