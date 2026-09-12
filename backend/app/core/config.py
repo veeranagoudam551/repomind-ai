@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     chunk_overlap_lines: int = 15
     openai_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
+    # "openai" | "local" (Day 51) - see app/services/embedding_providers.py.
+    # openai_api_key is only ever read when this is "openai"; the "local"
+    # provider (fastembed, in-process) needs no API key at all.
+    embedding_provider: str = "openai"
+    local_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_collection_name: str = "repomind_code_chunks"

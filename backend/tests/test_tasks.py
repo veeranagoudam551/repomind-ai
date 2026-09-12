@@ -90,15 +90,17 @@ async def test_worker_survives_two_ingestion_tasks_in_a_row(db_session, monkeypa
     async def _fake_download(owner, repo, ref):
         return tarball
 
-    async def _fake_generate_embeddings(texts):
-        return [[0.0, 0.0] for _ in texts]
+    class _FakeEmbeddingProvider:
+        async def embed_texts(self, texts):
+            return [[0.0, 0.0] for _ in texts]
 
     async def _noop(*args, **kwargs):
         return None
 
     monkeypatch.setattr("app.services.repository_ingestion._download_tarball", _fake_download)
     monkeypatch.setattr(
-        "app.services.repository_ingestion.generate_embeddings", _fake_generate_embeddings
+        "app.services.repository_ingestion.get_embedding_provider",
+        lambda: _FakeEmbeddingProvider(),
     )
     monkeypatch.setattr("app.services.repository_ingestion.vector_store.upsert_chunks", _noop)
     monkeypatch.setattr(

@@ -37,7 +37,8 @@ from app.schemas.errors import error_response
 from app.services import vector_store
 from app.services.agent import run_agent
 from app.services.code_chunking import reconstruct_file_content
-from app.services.embeddings import EmbeddingAPIError, EmbeddingConfigError, generate_embedding
+from app.services.embedding_providers import get_embedding_provider
+from app.services.embeddings import EmbeddingAPIError, EmbeddingConfigError
 from app.services.github import (
     GitHubAPIError,
     GitHubRepoNotFound,
@@ -570,7 +571,7 @@ async def search_repository(
     await _get_owned_repository(repository_id, db, current_user)
 
     try:
-        query_vector = await generate_embedding(payload.query)
+        query_vector = await get_embedding_provider().embed_query(payload.query)
     except EmbeddingConfigError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
     except EmbeddingAPIError as exc:
@@ -636,7 +637,7 @@ async def debug_repository(
     await _get_owned_repository(repository_id, db, current_user)
 
     try:
-        query_vector = await generate_embedding(payload.description)
+        query_vector = await get_embedding_provider().embed_query(payload.description)
     except EmbeddingConfigError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
     except EmbeddingAPIError as exc:

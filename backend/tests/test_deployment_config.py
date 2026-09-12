@@ -22,6 +22,7 @@ from app.core.config import Settings
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE_PATH = _REPO_ROOT / "docker" / "docker-compose.yml"
 _ENV_EXAMPLE_PATH = _REPO_ROOT / ".env.example"
+_BACKEND_DIR = _REPO_ROOT / "backend"
 
 _ENV_LINE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
 
@@ -99,3 +100,56 @@ def test_env_example_contains_no_real_looking_secrets():
             f"{var}={values[var]!r} in .env.example doesn't look like a placeholder - "
             "committed secrets must never happen"
         )
+
+
+# --- Day 51 review: fastembed isolated to its own requirements file ---
+
+
+def _requirement_lines(path: Path) -> list:
+    # Non-comment, non-blank lines only - a comment is allowed to mention
+    # a package name while explaining why it's deliberately absent.
+    return [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+def test_default_requirements_do_not_include_fastembed():
+    # The whole point of the split - a default `pip install -r
+    # requirements.txt` (and the "production" Docker target, which COPYs
+    # only this file) must never pull in fastembed/onnxruntime/onnx/
+    # numpy/tokenizers (~150MB) for an EMBEDDING_PROVIDER=openai deploy.
+    lines = _requirement_lines(_BACKEND_DIR / "requirements.txt")
+    assert not any("fastembed" in line.lower() for line in lines)
+
+
+def test_local_embedding_requirements_extend_the_default_ones():
+    content = (_BACKEND_DIR / "requirements-local-embedding.txt").read_text(encoding="utf-8")
+    assert "-r requirements.txt" in content
+    assert "fastembed" in content.lower()
+
+
+def test_dev_requirements_include_local_embedding_support():
+    # The test suite exercises the local provider for real
+    # (tests/test_embedding_providers.py) - `pip install -r
+    # requirements-dev.txt` must be enough to run it, no separate step.
+    content = (_BACKEND_DIR / "requirements-dev.txt").read_text(encoding="utf-8")
+    assert "requirements-local-embedding.txt" in content
+
+
+def test_dockerfile_has_a_lightweight_default_and_an_explicit_local_embedding_target():
+    content = (_BACKEND_DIR / "Dockerfile").read_text(encoding="utf-8")
+    stage_order = [line for line in content.splitlines() if line.startswith("FROM")]
+    assert any("AS production" in line for line in stage_order)
+    assert any("AS with-local-embedding" in line for line in stage_order)
+    # "production" must be the *last* FROM - Docker's own default build
+    # target when `--target`/`target:` isn't given at all.
+    assert stage_order[-1].endswith("AS production")
+
+
+def test_compose_backend_services_default_to_the_production_docker_target():
+    compose = _load_compose()
+    for name in ("api", "celery-worker"):
+        target = compose["services"][name]["build"]["target"]
+        assert target == "${BACKEND_DOCKER_TARGET:-production}"

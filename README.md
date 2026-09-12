@@ -268,6 +268,72 @@ affects another's. `RATE_LIMIT_ENABLED=false` disables all of them.
 Set very low for local testing: `curl` a protected endpoint repeatedly
 and confirm the `429` after the configured count.
 
+### Embedding Providers
+
+Since Day 51, which model turns code into vectors for semantic search is
+configurable (`EMBEDDING_PROVIDER` in `.env`), behind one small interface
+(`app/services/embedding_providers.py`: `embed_texts`/`embed_query`) that
+every caller — ingestion, search, debug, chat, the agent's tools — goes
+through instead of a specific provider directly.
+
+**`EMBEDDING_PROVIDER=openai`** (the default, unchanged since Day 14):
+- Requires `OPENAI_API_KEY`; requests return a clean `503` if it's unset
+  (never a crash) — see `.env.example`.
+- Uses `EMBEDDING_MODEL` (default `text-embedding-3-small`, 1536
+  dimensions) via OpenAI's Embeddings API.
+
+**`EMBEDDING_PROVIDER=local`**:
+- No OpenAI API key required at all — useful for demoing or developing
+  against this project without spending OpenAI credits.
+- Runs entirely inside the backend process via
+  [fastembed](https://github.com/qdrant/fastembed) (ONNX Runtime, CPU) —
+  no PyTorch, chosen specifically to keep the dependency footprint small
+  (versus the full `sentence-transformers` + PyTorch stack, which would
+  add several times as much).
+- **Not installed by default** (Day 51's review): `fastembed` and its
+  own dependencies (onnxruntime/onnx/numpy/tokenizers/huggingface_hub,
+  roughly 150MB) live in a separate
+  [`backend/requirements-local-embedding.txt`](backend/requirements-local-embedding.txt),
+  not `backend/requirements.txt` — so the default, `EMBEDDING_PROVIDER=openai`
+  install/image never pays for them. To actually use `local`:
+  - Native/WSL: `pip install -r backend/requirements-local-embedding.txt`
+    instead of `requirements.txt` (`requirements-dev.txt` already includes
+    it, since the test suite exercises the local provider for real).
+  - Docker Compose `full` profile: set `BACKEND_DOCKER_TARGET=with-local-embedding`
+    in `.env` before building — `backend/Dockerfile` has two build
+    targets, `production` (default, `requirements.txt` only) and
+    `with-local-embedding`; see `.env.example`.
+- The model (`LOCAL_EMBEDDING_MODEL`, default
+  `sentence-transformers/all-MiniLM-L6-v2`, 384 dimensions) is downloaded
+  and cached on first use, not committed to git and not baked into the
+  Docker image either way — the very first local-provider request after a
+  fresh start pays a one-time download/load cost (observed ~20s cold on
+  this project's own dev machine; effectively free after that, cached for
+  the life of the process).
+- Runs on CPU inside whatever container/process is already running the
+  backend, so it needs more of that process's CPU/RAM per request than
+  a network call to OpenAI does - there's no separate service to scale.
+- **Not claimed to match OpenAI's embedding quality** — no evaluation of
+  retrieval quality between the two has been done here; `all-MiniLM-L6-v2`
+  is a small, general-purpose sentence-embedding model, not one
+  specialized for code.
+
+**Switching providers is not retroactive.** OpenAI's 1536-dimensional
+vectors and the local model's 384-dimensional ones cannot coexist in one
+Qdrant collection — Qdrant fixes a collection's vector size for its
+lifetime, and silently mixing dimensions is exactly what this design
+avoids. Each provider gets its **own** Qdrant collection automatically
+(`{QDRANT_COLLECTION_NAME}` for `openai` — unchanged, so every existing
+deployment's data stays exactly where it is; `{QDRANT_COLLECTION_NAME}_local`
+for `local`), and `vector_store.ensure_collection()` also checks an
+existing collection's actual vector size before upserting into it,
+raising a clear error rather than a cryptic Qdrant one on any mismatch.
+Practical effect: a repository ingested under one provider has to be
+**re-ingested** (`POST /repositories/{id}/reindex`) after switching
+`EMBEDDING_PROVIDER` before it's searchable under the new one — nothing
+does this automatically, since re-embedding an entire repository isn't
+free and shouldn't happen as a side effect of an env var change.
+
 ### Running tests
 
 ```bash

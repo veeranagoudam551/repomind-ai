@@ -7,7 +7,7 @@ from app.services.embeddings import EmbeddingConfigError
 from app.services.llm import LLMConfigError
 from tests.conftest import register_and_login
 from tests.factories import make_repo_info
-from tests.test_repositories import _mock_fetch
+from tests.test_repositories import _mock_embed_query, _mock_fetch
 
 
 async def _make_repo_with_chunk(client, db_session, monkeypatch, headers):
@@ -127,7 +127,7 @@ async def test_send_message_full_rag_flow(client, db_session, monkeypatch):
         llm_calls.append((system_prompt, user_message))
         return "The app is created by calling create_app()."
 
-    monkeypatch.setattr("app.api.conversations.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.api.conversations.get_embedding_provider", _fake_embed)
     monkeypatch.setattr("app.api.conversations.vector_store.search", _fake_search)
     monkeypatch.setattr("app.api.conversations.generate_response", _fake_generate_response)
 
@@ -174,7 +174,7 @@ async def test_send_message_returns_canned_reply_when_no_hits(client, db_session
     async def _fail_if_called(*args, **kwargs):
         raise AssertionError("LLM should not be called when there is no retrieved context")
 
-    monkeypatch.setattr("app.api.conversations.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.api.conversations.get_embedding_provider", _fake_embed)
     monkeypatch.setattr("app.api.conversations.vector_store.search", _fake_search)
     monkeypatch.setattr("app.api.conversations.generate_response", _fail_if_called)
 
@@ -197,7 +197,7 @@ async def test_send_message_maps_embedding_config_error_to_503(client, db_sessio
     async def _fake_embed(text):
         raise EmbeddingConfigError("OPENAI_API_KEY is not configured")
 
-    monkeypatch.setattr("app.api.conversations.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.api.conversations.get_embedding_provider", _fake_embed)
 
     response = await client.post(
         f"/conversations/{conversation_id}/messages", json={"content": "hi"}, headers=headers
@@ -219,7 +219,7 @@ async def test_send_message_maps_llm_config_error_to_503(client, db_session, mon
     async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
         raise LLMConfigError("ANTHROPIC_API_KEY is not configured")
 
-    monkeypatch.setattr("app.api.conversations.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.api.conversations.get_embedding_provider", _fake_embed)
     monkeypatch.setattr("app.api.conversations.vector_store.search", _fake_search)
     monkeypatch.setattr("app.api.conversations.generate_response", _fake_generate_response)
 

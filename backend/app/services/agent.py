@@ -52,7 +52,8 @@ from app.models.code_chunk import CodeChunk
 from app.models.repository_file import RepositoryFile
 from app.services import vector_store
 from app.services.code_chunking import reconstruct_file_content
-from app.services.embeddings import EmbeddingAPIError, EmbeddingConfigError, generate_embedding
+from app.services.embedding_providers import get_embedding_provider
+from app.services.embeddings import EmbeddingAPIError, EmbeddingConfigError
 from app.services.llm import LLMAPIError, LLMConfigError, generate_response
 from app.services.security_scan import scan_content
 from app.services.vector_store import VectorStoreError
@@ -142,7 +143,7 @@ async def _search_chunks(
     any failure or no-match, blocks is empty and error is a short message
     the caller prefixes with its own tool name."""
     try:
-        vector = await generate_embedding(query)
+        vector = await get_embedding_provider().embed_query(query)
     except EmbeddingConfigError as exc:
         return [], f"unavailable: {exc}"
     except EmbeddingAPIError as exc:

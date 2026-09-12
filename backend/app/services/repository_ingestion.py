@@ -4,7 +4,9 @@
 Downloads a repository's default branch as a tarball from GitHub, extracts
 it to a temp directory, scans the resulting file tree, persists per-file
 metadata to `repository_files`, splits each text file's content into
-`code_chunks`, embeds every chunk (Day 14's `generate_embeddings`), and
+`code_chunks`, embeds every chunk (via the configured `EMBEDDING_PROVIDER` -
+Day 14's OpenAI implementation by default, Day 51's local one as an
+alternative), and
 upserts the vectors into Qdrant (Day 15's `vector_store`) - setting each
 `code_chunks.vector_id` once its vector is stored. Runs inside a Celery
 worker (Day 34's `app/tasks.py`) rather than FastAPI's `BackgroundTasks`
@@ -34,7 +36,7 @@ from app.models.repository import Repository, RepositoryStatus
 from app.models.repository_file import RepositoryFile
 from app.services import vector_store
 from app.services.code_chunking import chunk_file
-from app.services.embeddings import generate_embeddings
+from app.services.embedding_providers import get_embedding_provider
 from app.services.github import GITHUB_API_BASE, parse_github_url
 
 logger = logging.getLogger(__name__)
@@ -283,7 +285,9 @@ async def ingest_repository(repository_id: uuid.UUID) -> None:
                 chunk_total += len(chunks)
 
             if pending_chunks:
-                vectors = await generate_embeddings([chunk.content for chunk in pending_chunks])
+                vectors = await get_embedding_provider().embed_texts(
+                    [chunk.content for chunk in pending_chunks]
+                )
                 points = [
                     {
                         "id": str(chunk.id),

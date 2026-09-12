@@ -1,0 +1,17 @@
+# Adds local, in-process embedding support (EMBEDDING_PROVIDER=local,
+# app/services/embedding_providers.py) on top of the base requirements -
+# a separate file, not folded into requirements.txt, so the default
+# production image (EMBEDDING_PROVIDER=openai) never installs this (Day 51
+# review): fastembed pulls in onnxruntime/onnx/numpy/tokenizers/
+# huggingface_hub, adding roughly 150MB versus requirements.txt alone.
+#
+# Install this instead of requirements.txt when you actually intend to
+# run with EMBEDDING_PROVIDER=local (bare-metal/native/WSL, or
+# `docker build --target with-local-embedding` - see backend/Dockerfile).
+# requirements-dev.txt already includes this, since the test suite
+# exercises the local provider for real (tests/test_embedding_providers.py).
+-r requirements.txt
+# ONNX Runtime instead of the full `sentence-transformers` package
+# specifically to avoid also pulling in PyTorch (hundreds of MB on top of
+# the above).
+fastembed==0.3.6

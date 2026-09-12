@@ -142,9 +142,10 @@ async def test_ingest_repository_embeds_chunks_and_sets_vector_id(db_session, mo
 
     embed_calls = []
 
-    async def _fake_generate_embeddings(texts):
-        embed_calls.append(texts)
-        return [[float(i), 0.0] for i in range(len(texts))]
+    class _FakeEmbeddingProvider:
+        async def embed_texts(self, texts):
+            embed_calls.append(texts)
+            return [[float(i), 0.0] for i in range(len(texts))]
 
     upsert_calls = []
 
@@ -160,7 +161,8 @@ async def test_ingest_repository_embeds_chunks_and_sets_vector_id(db_session, mo
         "app.services.repository_ingestion._download_tarball", _fake_download
     )
     monkeypatch.setattr(
-        "app.services.repository_ingestion.generate_embeddings", _fake_generate_embeddings
+        "app.services.repository_ingestion.get_embedding_provider",
+        lambda: _FakeEmbeddingProvider(),
     )
     monkeypatch.setattr(
         "app.services.repository_ingestion.vector_store.upsert_chunks", _fake_upsert
@@ -207,6 +209,9 @@ async def test_ingest_repository_skips_embedding_when_no_chunks(db_session, monk
     async def _fail_if_called(*args, **kwargs):
         raise AssertionError("should not be called when there are no chunks")
 
+    class _FailingEmbeddingProvider:
+        embed_texts = staticmethod(_fail_if_called)
+
     async def _fake_delete(repository_id):
         return None
 
@@ -214,7 +219,8 @@ async def test_ingest_repository_skips_embedding_when_no_chunks(db_session, monk
         "app.services.repository_ingestion._download_tarball", _fake_download
     )
     monkeypatch.setattr(
-        "app.services.repository_ingestion.generate_embeddings", _fail_if_called
+        "app.services.repository_ingestion.get_embedding_provider",
+        lambda: _FailingEmbeddingProvider(),
     )
     monkeypatch.setattr(
         "app.services.repository_ingestion.vector_store.upsert_chunks", _fail_if_called
@@ -246,11 +252,15 @@ async def test_ingest_repository_fails_when_embedding_errors(db_session, monkeyp
     async def _raise_embedding_error(texts):
         raise RuntimeError("embedding provider unreachable")
 
+    class _RaisingEmbeddingProvider:
+        embed_texts = staticmethod(_raise_embedding_error)
+
     monkeypatch.setattr(
         "app.services.repository_ingestion._download_tarball", _fake_download
     )
     monkeypatch.setattr(
-        "app.services.repository_ingestion.generate_embeddings", _raise_embedding_error
+        "app.services.repository_ingestion.get_embedding_provider",
+        lambda: _RaisingEmbeddingProvider(),
     )
     monkeypatch.setattr(
         "app.services.repository_ingestion.vector_store.delete_by_repository", _fake_delete

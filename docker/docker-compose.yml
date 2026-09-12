@@ -121,6 +121,12 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile
+      # "production" (default) skips fastembed's ~150MB dependency tree
+      # entirely - only needed when EMBEDDING_PROVIDER (below) is "local".
+      # Set BACKEND_DOCKER_TARGET=with-local-embedding in .env (and
+      # rebuild: `--profile full up -d --build`) to switch (Day 51's
+      # review; see backend/Dockerfile and .env.example).
+      target: ${BACKEND_DOCKER_TARGET:-production}
     container_name: repomind-api
     restart: unless-stopped
     environment:
@@ -160,6 +166,10 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile
+      # Same target as api (Day 51's review) - ingestion embeds chunks
+      # through the same EMBEDDING_PROVIDER, so this worker needs the
+      # same dependency set api does, not a separately-decided one.
+      target: ${BACKEND_DOCKER_TARGET:-production}
     container_name: repomind-celery-worker
     restart: unless-stopped
     # Overrides the image's own ENTRYPOINT (migrations + uvicorn) entirely -

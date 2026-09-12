@@ -32,7 +32,8 @@ from app.schemas.conversation import (
 )
 from app.schemas.errors import error_response
 from app.services import vector_store
-from app.services.embeddings import EmbeddingAPIError, EmbeddingConfigError, generate_embedding
+from app.services.embedding_providers import get_embedding_provider
+from app.services.embeddings import EmbeddingAPIError, EmbeddingConfigError
 from app.services.llm import LLMAPIError, LLMConfigError, generate_response
 from app.services.vector_store import VectorStoreError
 
@@ -218,7 +219,7 @@ async def send_message(
     await db.commit()
 
     try:
-        query_vector = await generate_embedding(payload.content)
+        query_vector = await get_embedding_provider().embed_query(payload.content)
     except EmbeddingConfigError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
     except EmbeddingAPIError as exc:

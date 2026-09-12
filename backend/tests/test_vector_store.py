@@ -224,3 +224,52 @@ async def test_delete_by_repository_raises_on_connection_failure(monkeypatch):
     _install_mock_transport(monkeypatch, handler)
     with pytest.raises(VectorStoreError):
         await delete_by_repository("11111111-1111-1111-1111-111111111111")
+
+
+# --- Day 51: provider-aware collection naming + dimension-mismatch guard ---
+
+
+def test_collection_name_is_unchanged_for_openai_provider(monkeypatch):
+    from app.core.config import settings
+    from app.services.vector_store import _collection_name
+
+    monkeypatch.setattr(settings, "embedding_provider", "openai")
+    assert _collection_name() == settings.qdrant_collection_name
+
+
+def test_collection_name_is_suffixed_for_local_provider(monkeypatch):
+    from app.core.config import settings
+    from app.services.vector_store import _collection_name
+
+    monkeypatch.setattr(settings, "embedding_provider", "local")
+    assert _collection_name() == f"{settings.qdrant_collection_name}_local"
+
+
+async def test_ensure_collection_raises_clear_error_on_dimension_mismatch(monkeypatch):
+    # The scenario Day 51 exists to prevent: a collection already holds
+    # vectors of one dimension (e.g. OpenAI's 1536), and the active
+    # provider just produced a different one (e.g. local's 384) - this
+    # must never reach Qdrant's own upsert call and fail there with a
+    # cryptic native error.
+    def handler(request):
+        assert request.method == "GET"
+        return httpx.Response(
+            200,
+            json={"result": {"config": {"params": {"vectors": {"size": 1536}}}}},
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    with pytest.raises(VectorStoreError, match="1536.*384|384.*1536"):
+        await ensure_collection(384)
+
+
+async def test_ensure_collection_allows_matching_dimension(monkeypatch):
+    def handler(request):
+        assert request.method == "GET"
+        return httpx.Response(
+            200,
+            json={"result": {"config": {"params": {"vectors": {"size": 384}}}}},
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    await ensure_collection(384)  # must not raise

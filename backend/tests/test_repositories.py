@@ -22,6 +22,23 @@ def _mock_fetch(monkeypatch, result=None, exc=None):
     monkeypatch.setattr("app.api.repositories.fetch_repository", _fetch)
 
 
+class _FakeEmbeddingProvider:
+    """Wraps a test's own `_fake_embed(text)` coroutine as the
+    `get_embedding_provider()` factory now returns (Day 51) - the
+    endpoints call `.embed_query(...)`, not `generate_embedding(...)`
+    directly anymore, but tests only need to fake the query itself."""
+
+    def __init__(self, embed_query):
+        self._embed_query = embed_query
+
+    async def embed_query(self, text):
+        return await self._embed_query(text)
+
+
+def _mock_embed_query(monkeypatch, target: str, fake_embed):
+    monkeypatch.setattr(target, lambda: _FakeEmbeddingProvider(fake_embed))
+
+
 async def test_create_repository_requires_auth(client):
     response = await client.post("/repositories", json={"github_url": "octocat/Hello-World"})
     assert response.status_code == 401
@@ -552,7 +569,7 @@ async def test_search_returns_ranked_results(client, db_session, monkeypatch):
         assert str(repository_id) == str(repo_id)
         return [{"id": str(chunk.id), "score": 0.87, "payload": {"code_chunk_id": str(chunk.id)}}]
 
-    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.api.repositories.get_embedding_provider", _fake_embed)
     monkeypatch.setattr("app.api.repositories.vector_store.search", _fake_search)
 
     response = await client.post(
@@ -577,7 +594,7 @@ async def test_search_returns_empty_when_no_hits(client, db_session, monkeypatch
     async def _fake_search(vector, repository_id, limit=10):
         return []
 
-    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.api.repositories.get_embedding_provider", _fake_embed)
     monkeypatch.setattr("app.api.repositories.vector_store.search", _fake_search)
 
     response = await client.post(
@@ -605,7 +622,7 @@ async def test_search_maps_embedding_config_error_to_503(client, db_session, mon
     async def _fake_embed(text):
         raise EmbeddingConfigError("OPENAI_API_KEY is not configured")
 
-    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.api.repositories.get_embedding_provider", _fake_embed)
 
     response = await client.post(
         f"/repositories/{repo_id}/search", json={"query": "hi"}, headers=headers
@@ -800,7 +817,7 @@ async def test_debug_returns_diagnosis_with_sources(client, db_session, monkeypa
         assert "NoneType has no attribute" in user_message
         return "The crash happens because create_app() returns None."
 
-    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.api.repositories.get_embedding_provider", _fake_embed)
     monkeypatch.setattr("app.api.repositories.vector_store.search", _fake_search)
     monkeypatch.setattr("app.api.repositories.generate_response", _fake_generate_response)
 
@@ -830,7 +847,7 @@ async def test_debug_returns_canned_reply_when_no_hits(client, db_session, monke
     async def _fail_if_called(*args, **kwargs):
         raise AssertionError("LLM should not be called when there is no retrieved context")
 
-    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.api.repositories.get_embedding_provider", _fake_embed)
     monkeypatch.setattr("app.api.repositories.vector_store.search", _fake_search)
     monkeypatch.setattr("app.api.repositories.generate_response", _fail_if_called)
 
@@ -861,7 +878,7 @@ async def test_debug_maps_embedding_config_error_to_503(client, db_session, monk
     async def _fake_embed(text):
         raise EmbeddingConfigError("OPENAI_API_KEY is not configured")
 
-    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.api.repositories.get_embedding_provider", _fake_embed)
 
     response = await client.post(
         f"/repositories/{repo_id}/debug", json={"description": "hi"}, headers=headers
@@ -882,7 +899,7 @@ async def test_debug_maps_llm_config_error_to_503(client, db_session, monkeypatc
     async def _fake_generate_response(system_prompt, user_message, max_tokens=1024):
         raise LLMConfigError("ANTHROPIC_API_KEY is not configured")
 
-    monkeypatch.setattr("app.api.repositories.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.api.repositories.get_embedding_provider", _fake_embed)
     monkeypatch.setattr("app.api.repositories.vector_store.search", _fake_search)
     monkeypatch.setattr("app.api.repositories.generate_response", _fake_generate_response)
 
@@ -1110,7 +1127,7 @@ async def test_agent_calls_search_code_tool_then_finishes(client, db_session, mo
         return [{"id": str(chunk.id), "score": 0.9, "payload": {"code_chunk_id": str(chunk.id)}}]
 
     monkeypatch.setattr("app.services.agent.generate_response", _fake_generate_response)
-    monkeypatch.setattr("app.services.agent.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.services.agent.get_embedding_provider", _fake_embed)
     monkeypatch.setattr("app.services.agent.vector_store.search", _fake_search)
 
     response = await client.post(
@@ -1222,7 +1239,7 @@ async def test_agent_calls_debug_tool_then_finishes(client, db_session, monkeypa
         return [{"id": str(chunk.id), "score": 0.9, "payload": {"code_chunk_id": str(chunk.id)}}]
 
     monkeypatch.setattr("app.services.agent.generate_response", _fake_generate_response)
-    monkeypatch.setattr("app.services.agent.generate_embedding", _fake_embed)
+    _mock_embed_query(monkeypatch, "app.services.agent.get_embedding_provider", _fake_embed)
     monkeypatch.setattr("app.services.agent.vector_store.search", _fake_search)
 
     response = await client.post(
