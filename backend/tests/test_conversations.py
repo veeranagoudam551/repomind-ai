@@ -1,7 +1,10 @@
 import uuid
 
+from sqlalchemy import event
+
 from app.models.code_chunk import CodeChunk
 from app.models.conversation import Conversation
+from app.models.message import Message, MessageRole
 from app.models.repository_file import RepositoryFile
 from app.services.embeddings import EmbeddingConfigError
 from app.services.llm import LLMConfigError
@@ -205,6 +208,24 @@ async def test_send_message_maps_embedding_config_error_to_503(client, db_sessio
     assert response.status_code == 503
 
 
+async def _add_message(db_session, conversation_id, role, content, source_chunk_ids=None):
+    # One add()+commit() per message, not a batched add_all() - Postgres's
+    # now() (this table's created_at server_default) returns the *current
+    # transaction's* start time, so messages committed together would tie
+    # on created_at and make list_messages' ORDER BY created_at ambiguous
+    # between them.
+    message = Message(
+        conversation_id=conversation_id,
+        role=role,
+        content=content,
+        source_chunk_ids=source_chunk_ids,
+    )
+    db_session.add(message)
+    await db_session.commit()
+    await db_session.refresh(message)
+    return message
+
+
 async def test_send_message_maps_llm_config_error_to_503(client, db_session, monkeypatch):
     headers = await register_and_login(client, "msgllmerror@example.com")
     repo_id, chunk = await _make_repo_with_chunk(client, db_session, monkeypatch, headers)
@@ -227,3 +248,93 @@ async def test_send_message_maps_llm_config_error_to_503(client, db_session, mon
         f"/conversations/{conversation_id}/messages", json={"content": "hi"}, headers=headers
     )
     assert response.status_code == 503
+
+
+async def test_list_messages_batches_source_chunk_lookups(
+    client, db_session, test_engine, monkeypatch
+):
+    # Day 57 regression test: GET .../messages used to call _fetch_chunks
+    # once per message with any source_chunk_ids (one code_chunks query per
+    # message - the N+1 pattern the Day 57 audit found), instead of once for
+    # the whole conversation. Counting statements that touch the
+    # code_chunks table specifically (rather than the total query count)
+    # keeps this robust against unrelated queries - the conversation-
+    # ownership check, the messages SELECT itself, etc.
+    headers = await register_and_login(client, "msgbatch@example.com")
+    repo_id, chunk_a = await _make_repo_with_chunk(client, db_session, monkeypatch, headers)
+
+    repo_file_b = RepositoryFile(repository_id=repo_id, file_path="app/utils.py", size_bytes=10)
+    db_session.add(repo_file_b)
+    await db_session.commit()
+    await db_session.refresh(repo_file_b)
+
+    chunk_b = CodeChunk(
+        repository_id=repo_id,
+        repository_file_id=repo_file_b.id,
+        chunk_index=0,
+        content="def helper(): ...",
+        start_line=1,
+        end_line=1,
+        vector_id="chunk-b-vector",
+    )
+    db_session.add(chunk_b)
+    await db_session.commit()
+    await db_session.refresh(chunk_b)
+
+    conversation_id = await _make_conversation(client, repo_id, headers)
+
+    missing_chunk_id = str(uuid.uuid4())
+    await _add_message(db_session, conversation_id, MessageRole.USER, "q1")
+    await _add_message(
+        db_session, conversation_id, MessageRole.ASSISTANT, "a1", [str(chunk_a.id)]
+    )
+    await _add_message(db_session, conversation_id, MessageRole.USER, "q2")
+    await _add_message(
+        # Shares chunk_a with the first assistant message, so the batched
+        # lookup must also deduplicate correctly, not just avoid per-message
+        # queries.
+        db_session, conversation_id, MessageRole.ASSISTANT, "a2",
+        [str(chunk_a.id), str(chunk_b.id)],
+    )
+    await _add_message(db_session, conversation_id, MessageRole.USER, "q3")
+    await _add_message(db_session, conversation_id, MessageRole.ASSISTANT, "a3", [])
+    await _add_message(db_session, conversation_id, MessageRole.USER, "q4")
+    await _add_message(
+        # A source_chunk_id that no longer exists in code_chunks (e.g. the
+        # repository was reindexed since) - must be silently omitted, not
+        # an error.
+        db_session, conversation_id, MessageRole.ASSISTANT, "a4", [missing_chunk_id]
+    )
+
+    code_chunk_statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        if "code_chunks" in statement:
+            code_chunk_statements.append(statement)
+
+    event.listen(test_engine.sync_engine, "before_cursor_execute", _record)
+    try:
+        response = await client.get(f"/conversations/{conversation_id}/messages", headers=headers)
+    finally:
+        event.remove(test_engine.sync_engine, "before_cursor_execute", _record)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 8
+
+    # Exactly one query against code_chunks for the whole conversation -
+    # not one per message with non-empty source_chunk_ids (which would be
+    # 3 here: a1, a2, and a4).
+    assert len(code_chunk_statements) == 1
+
+    by_content = {message["content"]: message for message in body}
+    assert set(by_content) == {"q1", "a1", "q2", "a2", "q3", "a3", "q4", "a4"}
+
+    assert [source["code_chunk_id"] for source in by_content["a1"]["sources"]] == [str(chunk_a.id)]
+    assert {source["code_chunk_id"] for source in by_content["a2"]["sources"]} == {
+        str(chunk_a.id),
+        str(chunk_b.id),
+    }
+    assert by_content["a3"]["sources"] == []
+    assert by_content["a4"]["sources"] == []
+    assert by_content["q1"]["sources"] == []

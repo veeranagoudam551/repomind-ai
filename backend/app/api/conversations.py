@@ -88,9 +88,12 @@ async def _fetch_chunks(db: AsyncSession, chunk_ids: list[uuid.UUID]):
     return {str(chunk.id): (chunk, file_path) for chunk, file_path in rows}
 
 
-async def _to_message_read(db: AsyncSession, message: Message) -> MessageRead:
+def _build_message_read(message: Message, chunk_by_id: dict) -> MessageRead:
+    """Builds one message's response from an already-fetched chunk mapping -
+    no query of its own, so callers that already have `chunk_by_id` for a
+    whole batch of messages (list_messages below) never pay one query per
+    message for it."""
     chunk_ids = message.source_chunk_ids or []
-    chunk_by_id = await _fetch_chunks(db, [uuid.UUID(cid) for cid in chunk_ids])
     sources = [
         MessageSource(
             code_chunk_id=chunk.id,
@@ -109,6 +112,12 @@ async def _to_message_read(db: AsyncSession, message: Message) -> MessageRead:
         sources=sources,
         created_at=message.created_at,
     )
+
+
+async def _to_message_read(db: AsyncSession, message: Message) -> MessageRead:
+    chunk_ids = message.source_chunk_ids or []
+    chunk_by_id = await _fetch_chunks(db, [uuid.UUID(cid) for cid in chunk_ids])
+    return _build_message_read(message, chunk_by_id)
 
 
 @router.post(
@@ -183,7 +192,20 @@ async def list_messages(
         .where(Message.conversation_id == conversation.id)
         .order_by(Message.created_at)
     )
-    return [await _to_message_read(db, message) for message in result.all()]
+    messages = result.all()
+
+    # Day 57: one batched chunk lookup for the whole conversation instead of
+    # one per message (the N+1 pattern _to_message_read's per-call
+    # _fetch_chunks has for a single message, harmless there but not here) -
+    # the same "collect every id, one .in_() query, build sources from an
+    # in-memory mapping" approach search_repository/debug_repository/
+    # send_message already use.
+    all_chunk_ids = {
+        uuid.UUID(cid) for message in messages for cid in (message.source_chunk_ids or [])
+    }
+    chunk_by_id = await _fetch_chunks(db, list(all_chunk_ids))
+
+    return [_build_message_read(message, chunk_by_id) for message in messages]
 
 
 @router.post(

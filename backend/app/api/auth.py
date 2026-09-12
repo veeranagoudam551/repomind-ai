@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,9 +32,15 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
+    # Day 57: bcrypt's hashing is genuinely CPU-bound (~100-300ms at this
+    # project's cost factor) - calling it directly here would block this
+    # process's whole event loop for that long, stalling every other
+    # concurrent request it's serving. asyncio.to_thread runs it on a
+    # worker thread instead; hash_password itself is untouched.
+    hashed_password = await asyncio.to_thread(hash_password, payload.password)
     user = User(
         email=payload.email,
-        hashed_password=hash_password(payload.password),
+        hashed_password=hashed_password,
         full_name=payload.full_name,
     )
     db.add(user)
@@ -58,7 +66,13 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
 )
 async def login(payload: UserLogin, db: AsyncSession = Depends(get_db)):
     user = await db.scalar(select(User).where(User.email == payload.email))
-    if user is None or not verify_password(payload.password, user.hashed_password):
+    # Same reasoning as register() above - offloaded to a thread so bcrypt's
+    # verification doesn't block the event loop either. `or` still
+    # short-circuits: verify_password is only ever awaited when a user was
+    # actually found, so there's no `user.hashed_password` on a None user.
+    if user is None or not await asyncio.to_thread(
+        verify_password, payload.password, user.hashed_password
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",

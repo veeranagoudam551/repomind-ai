@@ -1,3 +1,6 @@
+import asyncio
+
+from app.core.security import hash_password, verify_password
 from tests.conftest import register_and_login
 
 
@@ -74,3 +77,86 @@ async def test_me_with_valid_token(client):
 async def test_me_rejects_garbage_token(client):
     response = await client.get("/auth/me", headers={"Authorization": "Bearer not-a-real-token"})
     assert response.status_code == 401
+
+
+def _track_to_thread(monkeypatch, target: str) -> list:
+    """Wraps asyncio.to_thread so a test can assert *which* function it was
+    called with (Day 57's event-loop-offload fix) without asserting
+    anything about timing - the wrapper still awaits the real
+    asyncio.to_thread, so the wrapped call's actual behavior (a real bcrypt
+    hash/verify) is completely unchanged."""
+    calls: list = []
+    real_to_thread = asyncio.to_thread
+
+    async def _tracking_to_thread(func, *args, **kwargs):
+        calls.append(func)
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(target, _tracking_to_thread)
+    return calls
+
+
+async def test_register_offloads_bcrypt_hashing_to_a_thread(client, monkeypatch):
+    calls = _track_to_thread(monkeypatch, "app.api.auth.asyncio.to_thread")
+
+    response = await client.post(
+        "/auth/register",
+        json={"email": "threaded_register@example.com", "password": "TestPass123!"},
+    )
+
+    assert response.status_code == 201
+    assert calls == [hash_password]
+
+
+async def test_login_offloads_bcrypt_verification_to_a_thread(client, monkeypatch):
+    await client.post(
+        "/auth/register",
+        json={"email": "threaded_login@example.com", "password": "TestPass123!"},
+    )
+
+    calls = _track_to_thread(monkeypatch, "app.api.auth.asyncio.to_thread")
+
+    response = await client.post(
+        "/auth/login",
+        json={"email": "threaded_login@example.com", "password": "TestPass123!"},
+    )
+
+    assert response.status_code == 200
+    assert calls == [verify_password]
+
+
+async def test_login_wrong_password_still_offloads_verification(client, monkeypatch):
+    # The short-circuit (`user is None or not await asyncio.to_thread(...)`)
+    # must still call verify_password - via the thread - whenever a user
+    # was actually found, wrong password or not, matching the pre-fix
+    # behavior exactly (test_login_wrong_password above already covers the
+    # resulting 401; this covers that the offload path is what produced it).
+    await client.post(
+        "/auth/register",
+        json={"email": "threaded_wrongpass@example.com", "password": "TestPass123!"},
+    )
+
+    calls = _track_to_thread(monkeypatch, "app.api.auth.asyncio.to_thread")
+
+    response = await client.post(
+        "/auth/login",
+        json={"email": "threaded_wrongpass@example.com", "password": "WrongPass123!"},
+    )
+
+    assert response.status_code == 401
+    assert calls == [verify_password]
+
+
+async def test_login_nonexistent_user_never_calls_to_thread(client, monkeypatch):
+    # The `or` short-circuit means verify_password (and so asyncio.to_thread)
+    # must never run at all when there's no user to check a password
+    # against - there's no hashed_password to pass it.
+    calls = _track_to_thread(monkeypatch, "app.api.auth.asyncio.to_thread")
+
+    response = await client.post(
+        "/auth/login",
+        json={"email": "no_such_threaded_user@example.com", "password": "TestPass123!"},
+    )
+
+    assert response.status_code == 401
+    assert calls == []
