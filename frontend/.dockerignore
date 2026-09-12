@@ -9,6 +9,7 @@ npm-debug.log*
 .env.local
 .env.*.local
 tests-e2e/
+tests-e2e-docker/
 playwright-report/
 test-results/
 .git/
