@@ -324,6 +324,7 @@ jobs:
       # talks to itself*, not that ingestion/search/chat/agent work, so
       # no external API key is needed or requested.
       JWT_SECRET_KEY: ci-docker-smoke-test-placeholder
+      POSTGRES_PASSWORD: ci-docker-smoke-postgres-password
       # Explicit, though already docker-compose.yml's own default (Day
       # 51) - this smoke test validates the production,
       # EMBEDDING_PROVIDER=openai path (also compose's own unconfigured
