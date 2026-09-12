@@ -34,6 +34,38 @@ guesswork.
 | Background jobs | Redis + Celery |
 | Infra | Docker, Docker Compose |
 
+## Architecture
+
+```
+  Browser
+     │
+     ▼
+  Next.js (frontend)         all API calls are server-side —
+     │                       the browser never calls FastAPI directly
+     ▼
+  FastAPI (backend)
+     ├──► PostgreSQL     users, repositories, files, chunks, conversations
+     ├──► Qdrant         code-chunk vectors (embeddings)
+     ├──► Redis          Celery broker + rate-limit counters
+     └──► Celery worker
+              │
+              ▼
+        background ingestion (clone → scan → chunk → embed)
+```
+
+Embeddings (turning code/chat text into vectors) happen in two places
+that share one interface (`app/services/embedding_providers.py`):
+repository ingestion (Celery worker, writing to Qdrant) and every
+search/chat/debug request (FastAPI, embedding the query to search
+Qdrant) — see "Embedding Providers" below for the OpenAI vs. local
+choice. LLM calls (Anthropic Claude, via LangGraph for the multi-step
+agent) happen only in FastAPI request handlers that need one: chat,
+explain, review, architecture, security-scan, and the agent — never
+during ingestion itself. See [docs/architecture.md](docs/architecture.md)
+for the full system design, including the data model and RAG pipeline
+in more detail, and "Production Deployment → Architecture" below for
+how this maps onto the actual Docker containers/ports.
+
 ## Project Structure
 
 ```
@@ -51,6 +83,27 @@ repomind-ai/
 This project is being built incrementally, one milestone at a time.
 See [docs/architecture.md](docs/architecture.md) for what's done and
 what's planned.
+
+## Prerequisites
+
+Versions actually pinned/validated by this project (in
+[`backend/Dockerfile`](backend/Dockerfile),
+[`frontend/Dockerfile`](frontend/Dockerfile), and
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)) — not invented
+minimums:
+
+| Requirement | Version | Needed for |
+|---|---|---|
+| Python | 3.9 | Backend (FastAPI, Celery worker) |
+| Node.js | 20 | Frontend (Next.js) |
+| PostgreSQL | 17 (`postgres:17-alpine` in Docker/CI) | Always |
+| Redis | 7 (`redis:7-alpine` in Docker/CI) | Always (Celery broker + rate limiting) |
+| Qdrant | latest (`qdrant/qdrant:latest` — not version-pinned upstream) | Always (vector search) |
+| Docker Engine + Compose v2 | any recent version supporting `docker compose` (not the standalone v1 `docker-compose` binary) | Only if using Docker for infra or the full stack — see "Local infrastructure" and "Docker Compose deployment" below |
+
+Postgres/Redis/Qdrant can each be run natively/via WSL instead of
+Docker — see "Local infrastructure" below; Docker is never a hard
+requirement of the application itself.
 
 ## Getting Started
 
@@ -349,29 +402,28 @@ freshly recreated schema. GitHub API calls and background ingestion
 are stubbed out, so the suite needs no network access and never
 touches your dev database.
 
-## Continuous Integration
+## Testing & Continuous Integration
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push
-and pull request against `main`, as three jobs:
+Every layer below runs locally with the commands already documented in
+"Running tests" and "End-to-end tests" above; this section covers what
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) additionally
+validates on every push/PR to `main`, so nothing here duplicates those
+setup steps.
 
-- **Backend tests** — the pytest suite above, against a Postgres service
-  container. No API keys needed: every external call (OpenAI, Anthropic,
-  GitHub, Qdrant, Celery) is mocked per-test, the same as running it
-  locally.
-- **Frontend typecheck & lint** — `next typegen`, `tsc --noEmit`,
-  `eslint .`.
-- **End-to-end tests** — the full Playwright suite (see below) against
-  Postgres, Redis, and Qdrant service containers plus a real Celery
-  worker, all on the runner itself. `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`
-  are deliberately left unset — the suite already asserts the graceful
-  inline error both produce when missing (Days 19-37), so it needs no
-  paid API access to pass. `GITHUB_TOKEN` is the workflow's own automatic
-  token, used only to raise the unauthenticated GitHub API rate limit;
-  no repo secret needs to be configured.
+| Job | What it validates | Depends on |
+|---|---|---|
+| `backend` (Backend tests) | The pytest suite, against a Postgres service container. No API keys needed — every external call (OpenAI, Anthropic, GitHub, Qdrant, Celery) is mocked per-test, same as running it locally. | — |
+| `frontend` (Frontend typecheck & lint) | `next typegen`, `tsc --noEmit`, `eslint .` | — |
+| `e2e` (End-to-end tests) | The full Playwright suite against real Postgres, Redis, and Qdrant service containers plus a real Celery worker, all on the runner. `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` are deliberately left unset — the suite asserts the graceful inline error both produce when missing — so it needs no paid API access to pass. `GITHUB_TOKEN` is the workflow's own automatic token, raising the unauthenticated GitHub API rate limit; no repo secret is configured. | `backend`, `frontend` |
+| `docker` (Docker build validation) | Builds the real `backend/Dockerfile` (both the `production` and `with-local-embedding` targets) and `frontend/Dockerfile` images with `docker/build-push-action`, and validates `docker compose -f docker/docker-compose.yml --profile full config`. Images are never pushed anywhere. | — |
+| `docker-smoke` (Docker Compose full-stack smoke test) | Starts the real `--profile full` stack (`docker compose ... up -d --build --wait --wait-timeout 180`), runs [`scripts/smoke_check.py`](scripts/smoke_check.py) against it (frontend + `/health` + `/health/ready`), then drives a real Chromium browser through a small production-like flow — register, add a repository, view its detail page, log out, confirm the protected dashboard redirects — against the actual containerized frontend/API/Postgres/Redis. Always tears the stack down (`down -v`), win or lose, and captures `docker compose ps`/`logs` and a Playwright HTML report on failure. | `docker` |
 
-The e2e job depends on the other two, so an obviously broken push fails
-fast without also paying for browser install + three services. On
-failure, the Playwright HTML report is uploaded as a build artifact.
+`e2e` depends on `backend`/`frontend` and `docker-smoke` depends on
+`docker`, so an obviously broken push fails fast without also paying
+for a browser install plus several services, or a full image build
+plus a container startup, for something that was never going to pass.
+On failure, `e2e` and `docker-smoke` each upload their own Playwright
+HTML report as a build artifact.
 
 ## Production Deployment
 
@@ -627,6 +679,17 @@ docker compose -f docker/docker-compose.yml up -d
 
 # The complete stack - postgres, redis, qdrant, api, celery-worker, frontend:
 docker compose -f docker/docker-compose.yml --env-file .env --profile full up -d
+
+# Same command CI's docker-smoke job actually runs (Day 54) - blocks
+# until every service with a healthcheck reports healthy, or fails
+# after 180s instead of hanging indefinitely:
+docker compose -f docker/docker-compose.yml --env-file .env --profile full \
+  up -d --build --wait --wait-timeout 180
+
+# Stop and remove the stack (add -v to also delete the named volumes -
+# Postgres/Redis/Qdrant data - and lose all local data):
+docker compose -f docker/docker-compose.yml --profile full down
+docker compose -f docker/docker-compose.yml --profile full down -v
 ```
 
 Create that real `.env` the same way as for local development —
@@ -698,32 +761,55 @@ just for this (Python's `urllib` for `api`, Node's `http` module for
 guaranteed shell tools" reasoning Day 40 already established for why
 Qdrant's own service has no healthcheck at all.
 
-### Production security considerations
+### Production security checklist
 
-- **Insecure defaults can't reach production silently.**
-  `app/core/config.py`'s `Settings` refuses to construct at all if
-  `ENVIRONMENT=production` and `JWT_SECRET_KEY` is empty or still the
-  placeholder default, or `DATABASE_URL` still contains the placeholder
-  `changeme` password — the app won't start, rather than starting with
-  a forgeable JWT secret or a guessable database password. `CORS_ORIGINS`
-  left at its localhost default logs a warning (not a hard failure — a
-  same-origin/reverse-proxy setup may not need CORS at all).
-- **Secrets only ever come from environment variables** — never
-  hardcoded, and `docker/docker-compose.yml`'s `full` profile services
-  give real secrets no local-dev-style fallback default.
-- **Logging was audited, not just assumed safe**: SQL echo logging
-  (`database.py`) is already gated to `ENVIRONMENT=development` only, so
-  production never logs full queries/parameters. No code anywhere logs
-  an `Authorization` header, JWT, or password — checked directly rather
-  than inferred, since this project has repeatedly found real bugs by
-  actually checking rather than assuming (Days 38-45's whole run of
-  cross-platform/connection-handling fixes).
-- **`/health`/`/health/ready` never leak infrastructure details** — no
-  connection string, credential, or hostname in either response, by
-  design and covered by tests (`tests/test_health.py`).
-- Everything from Day 46 (per-user/per-IP rate limiting) and Days 38-43
-  (fail-fast/graceful-degradation for every external dependency) applies
-  unchanged in production — none of it is a dev-only behavior.
+Actual safeguards already in this codebase, not aspirational ones —
+check each before a real deployment:
+
+- [ ] **Real `JWT_SECRET_KEY`** — `app/core/config.py`'s `Settings`
+      refuses to construct at all if `ENVIRONMENT=production` and this
+      is empty or still the placeholder default. Generate one with
+      `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+- [ ] **Real `DATABASE_URL` password** — same startup guard rejects the
+      placeholder `changeme` password once `ENVIRONMENT=production`.
+- [ ] **Secrets only via environment variables, never hardcoded** —
+      `docker/docker-compose.yml`'s `full` profile gives
+      `JWT_SECRET_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`GITHUB_TOKEN`
+      no local-dev-style fallback default; they must come from a real
+      `.env` or your platform's secret injection.
+- [ ] **No secrets committed to git** — `.gitignore` excludes `.env`,
+      `.env.example` holds only placeholders, and
+      `backend/tests/test_secret_safety.py`/`test_deployment_config.py`
+      check this directly rather than by convention alone.
+- [ ] **`CORS_ORIGINS` set to your real frontend origin(s)** — left at
+      the localhost default it only logs a warning (not a hard
+      failure — a same-origin/reverse-proxy setup may not need CORS at
+      all), so it's easy to forget in a real deployment.
+- [ ] **`ENVIRONMENT=production` actually set** — it's what turns on
+      every guard above, and disables SQL echo logging
+      (`database.py`) regardless of `LOG_LEVEL`.
+- [ ] **No sensitive data in logs** — checked directly, not assumed: no
+      code anywhere logs an `Authorization` header, JWT, or password.
+- [ ] **Containers run as non-root** — both `backend/Dockerfile` and
+      `frontend/Dockerfile` create and switch to an unprivileged user.
+- [ ] **`GITHUB_TOKEN` only if needed** — optional; only raises the
+      GitHub API rate limit, nothing depends on it being set.
+- [ ] **External AI provider credentials scoped and real** —
+      `OPENAI_API_KEY` (only if `EMBEDDING_PROVIDER=openai`) and
+      `ANTHROPIC_API_KEY` are read only at request time; a missing one
+      returns a clean `503`, never a crash, but the corresponding
+      feature won't work without it.
+- [ ] **`/health`/`/health/ready` never leak infrastructure details** —
+      no connection string, credential, or hostname in either response
+      (`tests/test_health.py`).
+- [ ] **HTTPS/TLS termination** — **not included** in this repository;
+      `uvicorn` runs plain HTTP and trusts `X-Forwarded-*` from a
+      reverse proxy you provide (nginx, Caddy, Traefik, your cloud
+      provider's load balancer) via `FORWARDED_ALLOW_IPS`. Terminate
+      TLS at that proxy, not here.
+- [ ] Per-user/per-IP rate limiting (Day 46) and fail-fast/graceful
+      degradation for every external dependency (Days 38-43) apply
+      unchanged in production — neither is dev-only behavior.
 
 ### Native/WSL fallback for resource-constrained machines
 
@@ -737,3 +823,53 @@ balancer — anything that can set `X-Forwarded-*` headers) in front of
 Option B this project's own README has documented since Day 40, for
 the same reason — Docker Desktop's resource overhead is a real cost on
 an 8 GB RAM machine, in production every bit as much as in local dev.
+
+## Troubleshooting
+
+Practical fixes for actual failure modes this project already handles
+or has hit, not a generic checklist:
+
+| Symptom | Likely cause / what to check |
+|---|---|
+| `api` container never becomes healthy | Check `docker compose -f docker/docker-compose.yml --profile full logs api`. The most common cause: `ENVIRONMENT=production` with `JWT_SECRET_KEY` or `DATABASE_URL`'s password still at its placeholder — `app/core/config.py`'s startup guard raises during `alembic upgrade head` (the entrypoint's first command), so `uvicorn` never starts and the healthcheck (`GET /health`) has nothing to reach. See "Required environment variables" above. |
+| Database migration/startup fails | Confirm `DATABASE_URL` is correct and Postgres is actually reachable — `api`/`celery-worker` both `depends_on: postgres: condition: service_healthy`, so a wrong password/host is the usual cause once Postgres itself is up. Run `alembic upgrade head` manually (see "Backend" above) to see the real error outside a container. |
+| Redis unavailable | `POST /repositories`/`.../reindex` fail fast into `status: "failed"` with a clear "background worker is unreachable" message rather than hanging (Day 38). Rate limiting fails **open** (requests allowed through), not closed, if Redis is unreachable — it won't block traffic, but limits stop being enforced. |
+| Qdrant unavailable | No healthcheck on the `qdrant` service by design — its image has no shell tools to probe with. Check manually: `curl http://localhost:6333/collections`. Search/chat/debug map an unreachable Qdrant to a clean `502`/`503`, not a crash. |
+| Ingestion ends in `failed` — OpenAI missing/quota | Expected without a real `OPENAI_API_KEY` (or with one that's exhausted) when `EMBEDDING_PROVIDER=openai` — the repository's `error_message` names it directly. Either set a real key, or switch to `EMBEDDING_PROVIDER=local` (see "Embedding Providers") to avoid needing one at all. |
+| Chat/explain/review/etc. return `503` | `ANTHROPIC_API_KEY` is unset or invalid — every LLM-backed endpoint returns a clean `503` rather than crashing when it's missing. |
+| Repository stuck in `pending` forever | No Celery worker is running. `.delay()` calls succeed either way (they just publish to Redis) — start one: `celery -A app.core.celery_app worker --loglevel=info` (add `--pool=solo` on native Windows; see "Backend" above). |
+| Port already in use (3000/8000/5432/6379/6333) | Something else on the host is already bound to it. For Compose, override via `.env` (`BACKEND_PORT`, `POSTGRES_PORT`, `REDIS_PORT`, `QDRANT_PORT`); for native processes, pass the equivalent flag/env var to that tool directly. |
+| Docker isn't available on this machine | Not a hard requirement — use Option B (native/WSL Postgres/Redis/Qdrant) from "Local infrastructure" above; every other piece of the stack already runs the same way regardless of Docker. |
+| Setting up local embeddings (`EMBEDDING_PROVIDER=local`) | Native/WSL: `pip install -r backend/requirements-local-embedding.txt` instead of `requirements.txt`. Docker: set `BACKEND_DOCKER_TARGET=with-local-embedding` in `.env` before `--build`ing. See "Embedding Providers" above for the full explanation — including that switching providers is not retroactive for already-ingested repositories. |
+
+## Project Status
+
+As of the Day 55 commit (`b655058`, GitHub Actions Run #15), the CI
+pipeline described in "Testing & Continuous Integration" above is fully
+green end to end:
+
+- Backend pytest suite, frontend typecheck/lint, and the full Playwright
+  e2e suite all pass.
+- Both backend Docker image targets (`production` and
+  `with-local-embedding`) and the frontend Docker image build
+  successfully in GitHub Actions, and `docker compose ... config`
+  validates cleanly.
+- The complete `--profile full` Docker Compose stack (Postgres, Redis,
+  Qdrant, API, Celery worker, frontend) starts and every service with a
+  healthcheck reports healthy, purely from CI's own `--wait` gate —
+  no fixed sleep.
+- `/health` and `/health/ready` both pass via `scripts/smoke_check.py`
+  against the running containers.
+- A real Chromium browser, driven by Playwright, successfully
+  registers a user, adds a repository, views its detail page, logs
+  out, and confirms the protected dashboard redirects to `/login` —
+  all against the actual containerized frontend/API/Postgres/Redis,
+  not a mock.
+- The stack is torn down cleanly (`down -v`) afterward every time.
+
+This full verification happens in **GitHub Actions**, not on this
+project's own development machine — Docker itself isn't installed
+there (see "Native/WSL fallback" above for why), so nothing in this
+README claims the Docker Compose stack was run or tested locally.
+Day-to-day development and the commands throughout this README are
+verified the native/WSL way instead.
