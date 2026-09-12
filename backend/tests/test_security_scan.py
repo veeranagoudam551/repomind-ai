@@ -5,7 +5,7 @@ regex-behavior tests rather than mocked API calls like every other AI
 service's test file.
 """
 
-from app.services.security_scan import scan_content
+from app.services.security_scan import MAX_LINE_LENGTH, scan_content
 
 
 def test_scan_content_detects_hardcoded_secret():
@@ -74,4 +74,32 @@ def test_scan_content_reports_correct_line_numbers():
 
 def test_scan_content_returns_empty_for_clean_code():
     findings = scan_content('def greet(name):\n    print(f"Hello, {name}!")\n')
+    assert findings == []
+
+
+def test_scan_content_applies_a_per_line_length_cap():
+    # Day 58: proves MAX_LINE_LENGTH is actually enforced, deterministically
+    # and without depending on wall-clock timing - the exact same secret
+    # text is detected when it falls within the cap and not detected when
+    # it falls entirely past it, since only the first MAX_LINE_LENGTH
+    # characters of any one line are ever handed to the regex rules.
+    secret = 'password = "detectablesecret123"'
+
+    within_cap_line = ("x" * (MAX_LINE_LENGTH - len(secret) - 10)) + secret
+    assert len(within_cap_line) < MAX_LINE_LENGTH
+    findings_within = scan_content(within_cap_line + "\n")
+    assert any(f.rule_id == "hardcoded-secret" for f in findings_within)
+
+    beyond_cap_line = ("x" * (MAX_LINE_LENGTH + 10)) + secret
+    findings_beyond = scan_content(beyond_cap_line + "\n")
+    assert not any(f.rule_id == "hardcoded-secret" for f in findings_beyond)
+
+
+def test_scan_content_handles_an_extremely_long_line_without_error():
+    # A single, pathological ~200k-character line (e.g. a minified bundle
+    # or a data blob with no newlines) - max_file_size_kb bounds total file
+    # size, not one line's length, so this is the case MAX_LINE_LENGTH
+    # exists for. Must return a well-formed (here, empty - "a" repeated
+    # matches no rule) result rather than raising or hanging.
+    findings = scan_content(("a" * 200_000) + "\n")
     assert findings == []

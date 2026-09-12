@@ -16,6 +16,15 @@ from dataclasses import dataclass
 
 MAX_SNIPPET_LENGTH = 200
 
+# Day 58: max_file_size_kb (app/core/config.py) bounds a scanned file's
+# *total* size, but not any single line's length - a pathological file
+# with one extremely long line (a minified bundle, a data blob with no
+# newlines) would otherwise still hand that whole line to every compiled
+# regex below. 2000 characters comfortably covers realistic source lines
+# (long import lists, long URLs, generated code) while keeping each rule's
+# per-line work bounded regardless of how one file happens to be laid out.
+MAX_LINE_LENGTH = 2000
+
 
 @dataclass(frozen=True)
 class SecurityRule:
@@ -96,15 +105,16 @@ _RULES: list[SecurityRule] = [
 def scan_content(content: str) -> list[SecurityFinding]:
     findings: list[SecurityFinding] = []
     for line_number, line in enumerate(content.splitlines(), start=1):
+        bounded_line = line[:MAX_LINE_LENGTH]
         for rule in _RULES:
-            if rule.pattern.search(line):
+            if rule.pattern.search(bounded_line):
                 findings.append(
                     SecurityFinding(
                         line=line_number,
                         rule_id=rule.rule_id,
                         severity=rule.severity,
                         message=rule.message,
-                        snippet=line.strip()[:MAX_SNIPPET_LENGTH],
+                        snippet=bounded_line.strip()[:MAX_SNIPPET_LENGTH],
                     )
                 )
     return findings
