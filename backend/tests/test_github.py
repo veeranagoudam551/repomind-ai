@@ -66,6 +66,35 @@ async def test_fetch_repository_raises_on_api_error(monkeypatch):
         await fetch_repository("owner", "repo")
 
 
+async def test_fetch_repository_works_without_a_github_token(monkeypatch):
+    # Day 52: GITHUB_TOKEN is explicitly optional (public repo access
+    # works fine without one, just at a lower rate limit) - confirms both
+    # halves of that: the request still succeeds, and no Authorization
+    # header is sent at all when unset (not an empty/placeholder one).
+    monkeypatch.setattr("app.services.github.settings.github_token", "")
+
+    def handler(request):
+        assert "Authorization" not in request.headers
+        return httpx.Response(200, json=_repo_response())
+
+    _install_mock_transport(monkeypatch, handler)
+
+    info = await fetch_repository("octocat", "Hello-World")
+    assert info.full_name == "octocat/Hello-World"
+
+
+async def test_fetch_repository_sends_bearer_token_when_configured(monkeypatch):
+    monkeypatch.setattr("app.services.github.settings.github_token", "ghp_fake_test_token")
+
+    def handler(request):
+        assert request.headers["Authorization"] == "Bearer ghp_fake_test_token"
+        return httpx.Response(200, json=_repo_response())
+
+    _install_mock_transport(monkeypatch, handler)
+
+    await fetch_repository("octocat", "Hello-World")
+
+
 async def test_fetch_repository_raises_on_connection_failure(monkeypatch):
     # Day 42: a fully unreachable GitHub (DNS failure, connection refused,
     # timeout) raises a raw httpx.RequestError with no .status_code to

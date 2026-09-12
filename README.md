@@ -161,7 +161,7 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate      # Windows; use `source .venv/bin/activate` on macOS/Linux
 pip install -r requirements.txt
-cp .env.example ../.env     # shared with the frontend; edit DATABASE_URL to point at your local Postgres
+cp ../.env.example ../.env  # the root .env.example - shared with the frontend; edit DATABASE_URL to point at your local Postgres
 alembic upgrade head        # create the schema (users, repositories, conversations, messages, repository_files, code_chunks)
 uvicorn app.main:app --reload --port 8000
 ```
@@ -429,10 +429,34 @@ configured to trust `X-Forwarded-*` headers from one (see below).
 ### Required environment variables
 
 Every variable is documented with its default and which day introduced
-it in [`.env.example`](.env.example) — copy it to `.env` and fill in
-real values. This table (Day 50) is the consolidated production-audit
-view of that same file: **when** each value is read matters as much as
-what it's for.
+it in [`.env.example`](.env.example) — this is the **one** canonical
+copy (`cp .env.example .env` from the repo root, or the equivalent step
+in "Getting Started" above); nothing else in this repo defines or
+duplicates this contract. **Never commit the real `.env`** — `.gitignore`
+already excludes it, `.env.example` itself contains only placeholders
+(`changeme`, blank), and this is checked by
+`tests/test_deployment_config.py`.
+
+At a glance (Day 52):
+- **Required production secrets** (no usable default; the app refuses to
+  start without real values — see below): `JWT_SECRET_KEY`,
+  `DATABASE_URL`'s password.
+- **Conditionally required secrets** (needed only for the feature that
+  uses them; each fails with a clean `503`, never a crash, if missing):
+  `OPENAI_API_KEY` (only when `EMBEDDING_PROVIDER=openai`),
+  `ANTHROPIC_API_KEY` (only when an LLM-backed endpoint actually runs).
+- **Optional**: `GITHUB_TOKEN` (raises a rate limit, nothing breaks
+  without it), all `RATE_LIMIT_*` variables, `WEB_CONCURRENCY`/
+  `FORWARDED_ALLOW_IPS`.
+- **Required production service URLs**: `DATABASE_URL`, `REDIS_URL`,
+  `QDRANT_HOST`/`QDRANT_PORT`.
+- **Public, not secret**: `NEXT_PUBLIC_API_BASE_URL` and
+  `COMPOSE_FRONTEND_API_BASE_URL` — Next.js inlines every
+  `NEXT_PUBLIC_*` variable into the JavaScript actually shipped to the
+  browser, so neither one may ever hold a secret (only ever a URL here).
+
+This table (Day 50) is the consolidated production-audit view of the
+same file: **when** each value is read matters as much as what it's for.
 
 | Variable | When read | Required in production |
 |---|---|---|
@@ -605,12 +629,17 @@ docker compose -f docker/docker-compose.yml up -d
 docker compose -f docker/docker-compose.yml --env-file .env --profile full up -d
 ```
 
-Secrets (`JWT_SECRET_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-`GITHUB_TOKEN`) have no fallback in the `full` profile's services,
-unlike `POSTGRES_PASSWORD`'s local-dev-only `changeme` default — they
-must come from your real `.env` (`--env-file .env`, since Compose only
-auto-loads a `.env` file next to the compose file, not the project
-root's).
+Create that real `.env` the same way as for local development —
+`cp .env.example .env`, then fill in real values, `ENVIRONMENT=production`
+included — never commit it. Secrets (`JWT_SECRET_KEY`, `OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`) have no fallback in the `full`
+profile's services, unlike `POSTGRES_PASSWORD`'s local-dev-only
+`changeme` default — they must come from that real `.env` (`--env-file
+.env`, since Compose only auto-loads a `.env` file next to the compose
+file, not the project root's) or from your deployment environment's own
+secret injection (e.g. a platform's secret manager exporting the same
+variable names) — either way, never hardcoded into `docker-compose.yml`
+itself.
 
 ### Verifying a deployment (Day 50)
 
