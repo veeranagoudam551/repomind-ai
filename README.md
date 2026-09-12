@@ -315,7 +315,12 @@ worker that reuses the backend's image, and an extended
 `docker/docker-compose.yml`. Nothing here changes local development at
 all — see "Local infrastructure" above, which is still the primary,
 actually-used-day-to-day path on this project's own 8 GB RAM dev
-machine.
+machine. Day 50 re-audited all of it (still no cloud target, still no
+Docker Desktop required to validate any of this) and found the
+existing design already sound; what follows folds in that audit's
+fixes and additions — a corrected migration-safety comment, a fuller
+environment-variable reference, documented (not newly invented)
+operational defaults, and a small smoke-check script.
 
 ### Architecture
 
@@ -359,24 +364,41 @@ configured to trust `X-Forwarded-*` headers from one (see below).
 
 Every variable is documented with its default and which day introduced
 it in [`.env.example`](.env.example) — copy it to `.env` and fill in
-real values. The ones that matter specifically for a production
-deployment, beyond everything already covered elsewhere in this README:
+real values. This table (Day 50) is the consolidated production-audit
+view of that same file: **when** each value is read matters as much as
+what it's for.
 
-- `ENVIRONMENT=production` — enables the startup guard described under
-  "Production security considerations" below, and disables SQL echo
-  logging regardless of `LOG_LEVEL`.
-- `JWT_SECRET_KEY` — **must** be a real random value in production; the
-  app refuses to start otherwise. Generate one with
-  `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
-- `DATABASE_URL` — must not contain the placeholder `changeme` password
-  once `ENVIRONMENT=production`, same reasoning.
-- `CORS_ORIGINS` — set to the real frontend origin(s), comma-separated.
-- `NEXT_PUBLIC_API_BASE_URL` — the frontend's build-time (not
-  runtime — see the frontend Dockerfile) reference to the backend's
-  public URL.
-- `WEB_CONCURRENCY` / `FORWARDED_ALLOW_IPS` — read by
-  `backend/docker-entrypoint.sh`; see `.env.example`'s "Production
-  deployment" section.
+| Variable | When read | Required in production |
+|---|---|---|
+| `ENVIRONMENT` | Runtime (backend process start) | Yes — must be `production` to enable the guards below |
+| `JWT_SECRET_KEY` | Runtime | **Yes, real value** — app refuses to start with the placeholder or empty |
+| `DATABASE_URL` | Runtime | **Yes, real value** — app refuses to start with the placeholder `changeme` password |
+| `CORS_ORIGINS` | Runtime | Recommended — logs a warning (not a hard failure) if left at the localhost default |
+| `GITHUB_TOKEN` | Runtime | Optional — raises GitHub's rate limit from 60/hr to 5000/hr |
+| `LLM_PROVIDER` / `ANTHROPIC_MODEL` / `EMBEDDING_MODEL` | Runtime | Optional (defaults are usable) |
+| `OPENAI_API_KEY` | Runtime | Yes, for search/chat/debug/etc. to work at all — endpoints return a clean `503` (not a crash) if unset |
+| `ANTHROPIC_API_KEY` | Runtime | Yes, same reasoning as `OPENAI_API_KEY` |
+| `REDIS_URL` | Runtime | Yes — Celery broker and Day 46's rate limiting both need it; rate limiting fails open (not closed) if unreachable |
+| `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_COLLECTION_NAME` | Runtime | Yes — search/chat/debug depend on it; see the Qdrant note below |
+| `RATE_LIMIT_*` (ten variables) | Runtime | Optional (defaults are usable); `RATE_LIMIT_ENABLED=false` disables all of them |
+| `WEB_CONCURRENCY` / `FORWARDED_ALLOW_IPS` | Runtime, but read by `backend/docker-entrypoint.sh` directly, **not** by the FastAPI app itself | Optional (defaults are usable) |
+| `NEXT_PUBLIC_API_BASE_URL` | **Build-time only** — inlined into the frontend's compiled output; changing it after the image is built has no effect | Native/WSL development only — see "Frontend deployment" below |
+| `COMPOSE_FRONTEND_API_BASE_URL` | **Build-time only**, same mechanism | Docker Compose `full` profile only; leave blank to use the correct default |
+
+Two secrets deliberately have **no usable default** anywhere in this
+stack (`.env.example`'s placeholders, `docker/docker-compose.yml`'s
+`full` profile): `JWT_SECRET_KEY` and `DATABASE_URL`'s password —
+generate a real `JWT_SECRET_KEY` with
+`python -c "import secrets; print(secrets.token_urlsafe(48))"`. Every
+other variable above has a default that's fine for local development
+but should be reviewed before a real deployment.
+
+**Qdrant limitation (Day 50):** `app/services/vector_store.py` talks to
+Qdrant over plain HTTP with no API key/auth support at all — fine for a
+self-hosted Qdrant container (as `docker/docker-compose.yml` runs), but
+this codebase does **not** currently support a hosted Qdrant Cloud
+instance that requires an API key. Adding that is real feature work,
+not a config change, and is explicitly out of scope here.
 
 ### Backend deployment
 
@@ -400,6 +422,15 @@ means in practice: without it, every request would appear to originate
 from the proxy's own IP, which would also silently break Day 46's
 per-IP `auth_register`/`auth_login` rate limiting (everyone behind the
 proxy would share one counter).
+
+**Migration safety scope (Day 50):** "safe on every deploy" above means
+safe for the single `api` container/replica this Compose file actually
+runs — `alembic upgrade head` records its progress in a plain table,
+not a real distributed lock, so running *multiple* `api` replicas that
+each execute this entrypoint concurrently could race each other. Add a
+real lock (e.g. a Postgres advisory lock in `alembic/env.py`) before
+ever scaling `api` beyond one replica; nothing here claims that safety
+today.
 
 ### Frontend deployment
 
@@ -465,6 +496,15 @@ worker it starts there). Uses the exact same Redis broker config
 something the worker itself needs to know about — it just needs the
 same `REDIS_URL` to reach the same Redis).
 
+**Concurrency (Day 50):** no `--concurrency=N` flag is set, so Celery
+uses its own default (one process per CPU core, prefork pool). That's
+a reasonable starting point, not a value this project has load-tested —
+if `ingest_repository` throughput ever actually becomes a bottleneck,
+override it directly in `docker/docker-compose.yml`'s `celery-worker`
+`command:` (e.g. `["celery", "-A", "app.core.celery_app", "worker",
+"--loglevel=info", "--concurrency=4"]`) rather than guessing a number
+here ahead of any evidence it's needed.
+
 ### PostgreSQL, Redis, and Qdrant
 
 Same requirements as local development — see "Local infrastructure"
@@ -474,6 +514,16 @@ services or long-lived containers with real persistent volumes/backups;
 adequate for a small, single-host deployment but don't include backup
 automation, replication, or TLS between services — add those
 separately for anything beyond that scale.
+
+**Connection pool sizing (Day 50):** `app/core/database.py` creates its
+async engine with no explicit `pool_size`/`max_overflow`, so it uses
+SQLAlchemy's defaults (5 + 10 = 15 connections, per process). Each of
+`api`'s `WEB_CONCURRENCY` uvicorn worker *processes* gets its own pool
+(they don't share one), plus one more from the Celery worker process —
+so a default `WEB_CONCURRENCY=2` deployment can open up to roughly
+`2 × 15 + 15 = 45` Postgres connections at once. Postgres's own default
+`max_connections` is 100, so this is comfortable out of the box, but
+size accordingly if `WEB_CONCURRENCY` is raised well beyond 2.
 
 ### Docker Compose deployment
 
@@ -495,6 +545,40 @@ unlike `POSTGRES_PASSWORD`'s local-dev-only `changeme` default — they
 must come from your real `.env` (`--env-file .env`, since Compose only
 auto-loads a `.env` file next to the compose file, not the project
 root's).
+
+### Verifying a deployment (Day 50)
+
+After bringing up the `full` profile (or any other deployment of this
+stack — native/WSL, or a future cloud target), check it actually works
+with:
+
+```bash
+# Everything defaults to localhost - matches the full Compose profile's
+# own published ports (frontend :3000, api :8000).
+python scripts/smoke_check.py
+
+# Against a real deployment elsewhere:
+python scripts/smoke_check.py --frontend-url https://app.example.com --api-url https://api.example.com
+```
+
+[`scripts/smoke_check.py`](scripts/smoke_check.py) is a small,
+dependency-free script (Python standard library only — no `pip install`
+needed) that makes three plain GET requests — the frontend's own URL,
+`GET /health`, and `GET /health/ready` — and prints one line per check
+plus a nonzero exit code if anything failed. It never sends anything
+but GET requests, so it's safe to run against a live deployment at any
+time. `backend/tests/test_smoke_check.py` covers its logic directly
+against a local fake server (no live deployment needed for that).
+
+To check each piece manually instead:
+
+```bash
+curl -s http://localhost:8000/health          # liveness
+curl -s http://localhost:8000/health/ready    # readiness (503 if Postgres is unreachable)
+curl -sI http://localhost:3000                # frontend responds at all
+docker compose -f docker/docker-compose.yml --profile full ps   # every service "healthy"?
+docker compose -f docker/docker-compose.yml --profile full logs celery-worker --tail 50
+```
 
 ### Health / readiness checks
 
