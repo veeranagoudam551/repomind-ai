@@ -2,25 +2,90 @@
 
 [![CI](https://github.com/veeranagoudam551/repomind-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/veeranagoudam551/repomind-ai/actions/workflows/ci.yml)
 
-**AI-Powered Codebase Intelligence & Software Engineering Assistant**
+**Autonomous AI Codebase Intelligence Platform**
 
-RepoMind AI lets a developer connect a GitHub repository and use AI to
-explore, understand, debug, and analyze the codebase — grounded in the
-actual source code via Retrieval-Augmented Generation (RAG), not
-guesswork.
+RepoMind AI is an autonomous AI codebase intelligence platform: it
+ingests a GitHub repository, indexes its source code for semantic
+retrieval, and uses Retrieval-Augmented Generation (RAG) plus a
+LangGraph multi-step agent to help a developer understand, review,
+debug, analyze, and secure that codebase — grounded in the actual
+source, not guesswork. See [docs/architecture.md](docs/architecture.md)
+for the full system design.
 
-> Status: Under active development. This README grows alongside the
-> project; see [docs/architecture.md](docs/architecture.md) for the
-> full system design.
+## Key Features
 
-## Planned Features
+Everything below is implemented and covered by the automated test
+suite — see "Testing & Continuous Integration" further down for the
+current test/CI counts.
 
-- Ask questions about a codebase and get answers grounded in real source
-- Semantic code search across a repository
-- AI-assisted debugging using repository context
-- Code review and code explanation
-- Architecture analysis and basic defensive security scanning
-- Specialized AI agents for complex, multi-step tasks
+- **RAG-based codebase chat** — ask questions and get answers grounded
+  in a repository's actual indexed code, with cited source files
+- **Semantic code search** — vector search across a repository's code
+  chunks, no LLM round-trip required
+- **AI code explanation** — a plain-language explanation of a single file
+- **AI code review** — bugs, security issues, edge cases, and code
+  smells for a single file
+- **AI debugging** — diagnoses a described bug using the most relevant
+  retrieved code as context
+- **Architecture analysis** — infers likely components, tech stack, and
+  entry points from a repository's file tree and README
+- **Static security scanning** — regex-based detection of hardcoded
+  secrets, `eval`/`exec`, shell injection, insecure deserialization, and
+  more; no LLM call and no API key required
+- **LangGraph multi-step autonomous agent** — given a goal, plans and
+  executes up to `max_steps` (1–10, default 4) tool calls before
+  answering, choosing among six fixed tools on each turn:
+  1. `search_code` — semantic search
+  2. `explain_file` — explain one file
+  3. `review_file` — review one file
+  4. `debug` — diagnose a described bug
+  5. `architecture` — analyze repository structure
+  6. `security_scan` — scan for common security issues
+
+  The agent's tool set is exactly these six — it cannot call anything
+  outside them — and every tool call is scoped to the same
+  repository/user the original request was authorized for.
+
+## Demo / Screenshots
+
+Not included yet — this README is text-only for now. Screenshots or a
+short screen recording of the dashboard, chat, and agent views would be
+a natural addition here.
+
+## How a Question Gets Answered (RAG Pipeline)
+
+The conceptual data flow behind chat, search, debug, and the agent's
+`search_code` tool — distinct from "Deployment Architecture" below,
+which shows how these pieces map onto actual containers, not how a
+question is actually answered:
+
+```
+GitHub Repository
+        ↓
+Repository Ingestion        (clone, scan — Celery worker, background)
+        ↓
+File Parsing & Chunking     (overlapping line-window chunks)
+        ↓
+Embeddings                  (OpenAI, or local fastembed — one or the
+        ↓                    other, never both at once)
+Qdrant Vector Store         (one collection per embedding provider)
+        ↓
+Semantic Retrieval          (cosine similarity, scoped to one repository)
+        ↓
+RAG / AI Tools              (chat, search, debug, explain, review,
+        ↓                    architecture, security-scan)
+Claude / LangGraph Agent    (grounded answer, or up to max_steps tool
+        ↓                    calls before one)
+Developer Answer
+```
+
+The top half (ingestion through Qdrant) runs once per repository, in
+the background, via a Celery worker (see "Repository Ingestion" in
+[docs/architecture.md](docs/architecture.md) for the full pipeline).
+The bottom half (retrieval through the developer's answer) runs
+per-request, synchronously, inside a FastAPI request handler — nothing
+in it is precomputed or cached beyond what's already in Qdrant/Postgres
+from ingestion.
 
 ## Tech Stack
 
@@ -30,11 +95,15 @@ guesswork.
 | Backend | Python, FastAPI, Pydantic, SQLAlchemy |
 | Relational DB | PostgreSQL |
 | Vector DB | Qdrant |
-| AI / RAG | LLM provider abstraction, embeddings, LangGraph (agents) |
+| AI / RAG | Anthropic Claude (chat, explain/review/debug/architecture, agent reasoning); OpenAI embeddings (default) or local fastembed/`all-MiniLM-L6-v2` (optional — one provider active at a time, never both simultaneously); LangGraph (multi-step agent orchestration) |
 | Background jobs | Redis + Celery |
 | Infra | Docker, Docker Compose |
 
-## Architecture
+## Deployment Architecture
+
+The runtime/container topology — which process talks to which service.
+For the conceptual "how does a question get answered" data flow, see
+"How a Question Gets Answered (RAG Pipeline)" above instead.
 
 ```
   Browser
@@ -80,9 +149,10 @@ repomind-ai/
 
 ## Development Status
 
-This project is being built incrementally, one milestone at a time.
-See [docs/architecture.md](docs/architecture.md) for what's done and
-what's planned.
+RepoMind AI was built incrementally, one milestone at a time, over 60
+days of iterative development — see [docs/architecture.md](docs/architecture.md)
+for the system design and its own day-by-day log. See "Project Status"
+near the end of this README for the current, CI-verified state.
 
 ## Prerequisites
 
@@ -269,12 +339,38 @@ filter; the line-window chunks generated from each file's content),
 `POST /repositories/{id}/search` (body: `{"query": str, "limit":
 int}`, default `limit` 10; embeds the query and returns the closest
 code chunks from that repository — `content`, `file_path`, line range,
-and similarity `score`, highest first), and
+and similarity `score`, highest first),
 `POST /repositories/{id}/files/{file_id}/explain` (no body; reconstructs
 that file's original content from its chunks and asks the LLM to
 explain it — needs only `ANTHROPIC_API_KEY`, not `OPENAI_API_KEY`,
 since no embedding/search is involved; `400` if the file has no chunks
-to explain, e.g. a binary file). Set `GITHUB_TOKEN` in `.env` to raise
+to explain, e.g. a binary file),
+`POST /repositories/{id}/files/{file_id}/review` (same shape as
+`explain` above, but asks the LLM for a code review — bugs, security
+issues, edge cases, code smells — instead of an explanation; same
+`ANTHROPIC_API_KEY`-only requirement and `400`-on-no-content behavior),
+`POST /repositories/{id}/debug` (body: `{"description": str}`; embeds
+the description, retrieves the closest matching code chunks from that
+repository, and asks the LLM to diagnose the likely root cause, citing
+sources — needs both an embedding provider and `ANTHROPIC_API_KEY`;
+returns a fixed explanatory message, still `200`, if nothing relevant
+is indexed yet),
+`POST /repositories/{id}/architecture` (no body; infers likely
+components, tech stack, and entry points from the repository's file
+tree and README content alone — no other file contents — and asks the
+LLM to summarize them; needs only `ANTHROPIC_API_KEY`; `400` if no
+files are indexed yet),
+`POST /repositories/{id}/security-scan` (no body; runs a local,
+rule-based static scan — no LLM call, no API key needed at all — over
+every indexed file's content for patterns like hardcoded secrets,
+`eval`/`exec`, shell injection, and SQL built via string interpolation,
+returning findings sorted by severity; `400` if no files are indexed
+yet), and
+`POST /repositories/{id}/agent` (body: `{"goal": str, "max_steps":
+int}`, `max_steps` optional, 1–10, default 4; runs the LangGraph
+multi-step agent — see "Key Features" above for its six tools — toward
+the stated goal, returning a final answer plus the sequence of tool
+calls it made). Set `GITHUB_TOKEN` in `.env` to raise
 GitHub's rate limit from 60 to 5000 requests/hour.
 
 After creation, a repository moves through
@@ -424,6 +520,24 @@ for a browser install plus several services, or a full image build
 plus a container startup, for something that was never going to pass.
 On failure, `e2e` and `docker-smoke` each upload their own Playwright
 HTML report as a build artifact.
+
+**Verification snapshot — commit `3736f40`, CI Run #20 (a point-in-time
+count, not re-verified on every future commit; it will grow if the
+project is developed further):**
+
+- 259 backend `pytest` tests (`backend/tests/`)
+- 19 Playwright end-to-end tests across 5 spec files (`frontend/tests-e2e/`)
+- 5 GitHub Actions CI jobs — `backend`, `frontend`, `e2e`, `docker`,
+  `docker-smoke` — all passing
+- The full Docker Compose stack (`docker-smoke`) starts and passes its
+  healthcheck-gated `--wait`, including the API's `/health/ready` check
+- A production-like browser test (register → add repository → view
+  detail page → log out → confirm the protected dashboard redirects)
+  passes against that real containerized stack, not a mock
+
+These are two genuinely different test suites, not one count split two
+ways — the 259 backend tests never touch a browser, and the 19 E2E
+tests never run against the backend's mocked external services.
 
 ## Production Deployment
 
@@ -759,7 +873,34 @@ already guaranteed present in that image rather than installing one
 just for this (Python's `urllib` for `api`, Node's `http` module for
 `frontend`, `celery inspect ping` for the worker) — the same "no
 guaranteed shell tools" reasoning Day 40 already established for why
-Qdrant's own service has no healthcheck at all.
+Qdrant's own service has no healthcheck at all. `api`'s own healthcheck
+probes `/health/ready` specifically (Day 60), not just `/health` — so a
+mid-life database outage is correctly reflected in the container's
+health status, not just whether the process itself is still running.
+
+### Observability
+
+- **Structured logging** (`backend/app/core/logging_config.py`) — one
+  JSON object per log line in production (machine-readable), a short
+  human-readable line otherwise; both formats carry the same fields.
+- **Request correlation** (`backend/app/core/request_id.py`) — every
+  response, success or failure, carries an `X-Request-ID` header, and
+  every log line emitted while handling that request carries the same
+  id. The frontend reads this back (`frontend/src/lib/api.ts`'s
+  `ApiError.requestId`) and appends a `(reference: <id>)` suffix to
+  error messages shown to the user, so a user-reported problem can be
+  traced to a specific backend log line.
+- **Celery ingestion diagnostics** (`backend/app/services/repository_ingestion.py`,
+  `backend/app/tasks.py`) — every ingestion run logs when it starts and
+  how long it took, on both success and failure. `ingest_repository_task`
+  is bounded by a Celery `soft_time_limit`/`time_limit` (600s/660s) so a
+  hung task can't occupy a worker indefinitely, with a recovery path
+  that marks the repository `failed` (with a clear message) instead of
+  leaving it stuck in `cloning`/`processing`.
+- **Graceful degradation for every external dependency** (GitHub,
+  OpenAI/local embeddings, Anthropic, Qdrant, Redis) — see "Health /
+  readiness checks" above and the Troubleshooting table below for the
+  specific behavior of each.
 
 ### Production security checklist
 
@@ -831,7 +972,7 @@ or has hit, not a generic checklist:
 
 | Symptom | Likely cause / what to check |
 |---|---|
-| `api` container never becomes healthy | Check `docker compose -f docker/docker-compose.yml --profile full logs api`. The most common cause: `ENVIRONMENT=production` with `JWT_SECRET_KEY` or `DATABASE_URL`'s password still at its placeholder — `app/core/config.py`'s startup guard raises during `alembic upgrade head` (the entrypoint's first command), so `uvicorn` never starts and the healthcheck (`GET /health`) has nothing to reach. See "Required environment variables" above. |
+| `api` container never becomes healthy | Check `docker compose -f docker/docker-compose.yml --profile full logs api`. The most common cause: `ENVIRONMENT=production` with `JWT_SECRET_KEY` or `DATABASE_URL`'s password still at its placeholder — `app/core/config.py`'s startup guard raises during `alembic upgrade head` (the entrypoint's first command), so `uvicorn` never starts and the healthcheck (`GET /health/ready`) has nothing to reach. The `api` container's healthcheck probes `/health/ready`, not just `/health` (Day 60) — it verifies Postgres is actually reachable, not just that the process is alive, so a database outage after startup is also correctly reflected here. See "Required environment variables" above. |
 | Database migration/startup fails | Confirm `DATABASE_URL` is correct and Postgres is actually reachable — `api`/`celery-worker` both `depends_on: postgres: condition: service_healthy`, so a wrong password/host is the usual cause once Postgres itself is up. Run `alembic upgrade head` manually (see "Backend" above) to see the real error outside a container. |
 | Redis unavailable | `POST /repositories`/`.../reindex` fail fast into `status: "failed"` with a clear "background worker is unreachable" message rather than hanging (Day 38). Rate limiting fails **open** (requests allowed through), not closed, if Redis is unreachable — it won't block traffic, but limits stop being enforced. |
 | Qdrant unavailable | No healthcheck on the `qdrant` service by design — its image has no shell tools to probe with. Check manually: `curl http://localhost:6333/collections`. Search/chat/debug map an unreachable Qdrant to a clean `502`/`503`, not a crash. |
@@ -844,9 +985,17 @@ or has hit, not a generic checklist:
 
 ## Project Status
 
-As of the Day 55 commit (`b655058`, GitHub Actions Run #15), the CI
-pipeline described in "Testing & Continuous Integration" above is fully
-green end to end:
+RepoMind AI is **implementation-complete**: every feature under "Key
+Features" above — RAG chat, semantic search, AI debugging/review/explain,
+architecture analysis, security scanning, and the LangGraph agent — is
+implemented, tested, and passing in CI. The CI badge at the top of this
+README always reflects the live state of the latest commit on `main`;
+what follows is a dated snapshot, not a claim that nothing will ever
+change again.
+
+As of commit `3736f40` (Day 60, GitHub Actions Run #20), the CI pipeline
+described in "Testing & Continuous Integration" above is fully green
+end to end, across all 5 jobs:
 
 - Backend pytest suite, frontend typecheck/lint, and the full Playwright
   e2e suite all pass.
@@ -857,7 +1006,9 @@ green end to end:
 - The complete `--profile full` Docker Compose stack (Postgres, Redis,
   Qdrant, API, Celery worker, frontend) starts and every service with a
   healthcheck reports healthy, purely from CI's own `--wait` gate —
-  no fixed sleep.
+  no fixed sleep. The `api` container's own healthcheck uses
+  `/health/ready` (Day 60), so this also proves the database was
+  actually reachable, not just that the process was alive.
 - `/health` and `/health/ready` both pass via `scripts/smoke_check.py`
   against the running containers.
 - A real Chromium browser, driven by Playwright, successfully
@@ -872,4 +1023,6 @@ project's own development machine — Docker itself isn't installed
 there (see "Native/WSL fallback" above for why), so nothing in this
 README claims the Docker Compose stack was run or tested locally.
 Day-to-day development and the commands throughout this README are
-verified the native/WSL way instead.
+verified the native/WSL way instead. Should development continue, this
+snapshot will be extended rather than replaced — check the CI badge for
+the current state of `main`.
