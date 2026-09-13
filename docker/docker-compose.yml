@@ -143,18 +143,23 @@ services:
     healthcheck:
       # Same "no guaranteed shell tools" situation as Qdrant above, but
       # this image genuinely does have one guaranteed interpreter: itself.
-      # Probes app/api/health.py's own liveness endpoint with the stdlib,
-      # no extra package installed just for this. Explicit timeout=3 on
-      # the probe itself (Day 47's review) rather than relying only on
-      # Docker's outer `timeout: 5s` below to kill a stuck process -
-      # bounded from the inside too, consistent with the rest of this
-      # project's "don't trust an unconfigured client timeout" pattern.
+      # Probes app/api/health.py's own readiness endpoint (Day 60), not
+      # just liveness - /health only proves the process is up, not that it
+      # can actually reach Postgres, so an api container could otherwise
+      # report "healthy" all through a mid-life database outage. /health/
+      # ready's own bounded (3s) Postgres check makes this healthcheck
+      # mean what Docker's own restart/orchestration decisions need it to
+      # mean. Explicit timeout=3 on the probe itself (Day 47's review)
+      # rather than relying only on Docker's outer `timeout: 5s` below to
+      # kill a stuck process - bounded from the inside too, consistent
+      # with the rest of this project's "don't trust an unconfigured
+      # client timeout" pattern.
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)",
         ]
       interval: 10s
       timeout: 5s
