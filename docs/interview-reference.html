@@ -1,0 +1,1752 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>RepoMind AI Interview Reference</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Karla:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f6f7fa;
+    --surface:#ffffff;
+    --surface-2:#edf0f4;
+    --ink:#1a2233;
+    --ink-soft:#55617a;
+    --ink-faint:#8993a8;
+    --border:#dde2ea;
+    --accent:#0e7c7b;
+    --accent-strong:#085f5f;
+    --accent-soft:#e1f1ef;
+    --warn:#9a5b13;
+    --warn-soft:#fbf1e3;
+    --code-ink:#5b21b6;
+    --shadow: 0 1px 2px rgba(20,30,50,0.04), 0 8px 24px rgba(20,30,50,0.06);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#10151f;
+      --surface:#171e2b;
+      --surface-2:#1f2836;
+      --ink:#e7ebf2;
+      --ink-soft:#a6b0c3;
+      --ink-faint:#6b7690;
+      --border:#2b3547;
+      --accent:#4fd6d3;
+      --accent-strong:#7ae6e3;
+      --accent-soft:#16302e;
+      --warn:#e3a458;
+      --warn-soft:#2e2313;
+      --code-ink:#c4b5fd;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#10151f;
+    --surface:#171e2b;
+    --surface-2:#1f2836;
+    --ink:#e7ebf2;
+    --ink-soft:#a6b0c3;
+    --ink-faint:#6b7690;
+    --border:#2b3547;
+    --accent:#4fd6d3;
+    --accent-strong:#7ae6e3;
+    --accent-soft:#16302e;
+    --warn:#e3a458;
+    --warn-soft:#2e2313;
+    --code-ink:#c4b5fd;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:'Karla', system-ui, -apple-system, "Segoe UI", sans-serif;
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3{
+    font-family:'Spectral', Georgia, 'Times New Roman', serif;
+    font-weight:600;
+    text-wrap:balance;
+    color:var(--ink);
+  }
+  code, .mono{
+    font-family:'IBM Plex Mono', ui-monospace, Menlo, monospace;
+    font-size:0.88em;
+  }
+  a{ color:var(--accent-strong); }
+  a:hover{ color:var(--accent); }
+
+  .layout{
+    display:grid;
+    grid-template-columns: 300px minmax(0,1fr);
+    gap:0;
+    max-width:1280px;
+    margin:0 auto;
+  }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{
+    position:sticky;
+    top:0;
+    align-self:start;
+    height:100dvh;
+    overflow-y:auto;
+    padding:24px 16px 40px 24px;
+    border-right:1px solid var(--border);
+  }
+  .brand{
+    font-family:'Spectral', serif;
+    font-weight:700;
+    font-size:1.05rem;
+    margin:0 0 2px;
+  }
+  .brand-sub{
+    color:var(--ink-faint);
+    font-size:0.78rem;
+    margin:0 0 18px;
+  }
+  #search{
+    width:100%;
+    padding:9px 12px;
+    border-radius:8px;
+    border:1px solid var(--border);
+    background:var(--surface);
+    color:var(--ink);
+    font-family:inherit;
+    font-size:0.85rem;
+    margin-bottom:18px;
+  }
+  #search:focus{ outline:2px solid var(--accent); outline-offset:1px; }
+  .nav-group-title{
+    font-size:0.72rem;
+    letter-spacing:0.08em;
+    text-transform:uppercase;
+    color:var(--ink-faint);
+    margin:18px 0 8px;
+    font-weight:600;
+  }
+  .nav-group-title:first-of-type{ margin-top:0; }
+  .navlist{ list-style:none; margin:0; padding:0; }
+  .navlist li a{
+    display:block;
+    padding:5px 8px;
+    margin:1px 0;
+    border-radius:6px;
+    color:var(--ink-soft);
+    text-decoration:none;
+    font-size:0.86rem;
+    line-height:1.35;
+  }
+  .navlist li a:hover{ background:var(--surface-2); color:var(--ink); }
+  .navlist li a.active{ background:var(--accent-soft); color:var(--accent-strong); font-weight:600; }
+  .navlist .num{ color:var(--ink-faint); font-family:'IBM Plex Mono',monospace; font-size:0.78em; margin-right:6px; }
+
+  /* ---------- Main ---------- */
+  main{ padding:44px 40px 100px; min-width:0; }
+  .hero{ max-width:68ch; margin-bottom:40px; }
+  .eyebrow{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:0.75rem;
+    letter-spacing:0.08em;
+    text-transform:uppercase;
+    color:var(--accent-strong);
+    margin:0 0 10px;
+  }
+  h1.title{ font-size:2.1rem; margin:0 0 14px; }
+  .lede{ color:var(--ink-soft); font-size:1.03rem; max-width:62ch; }
+  .meta-row{
+    display:flex; gap:18px; flex-wrap:wrap;
+    margin-top:18px; font-size:0.82rem; color:var(--ink-faint);
+  }
+  .meta-row .mono{ color:var(--ink-soft); }
+
+  section.topic{
+    max-width:76ch;
+    padding:26px 0;
+    border-top:1px solid var(--border);
+    scroll-margin-top:16px;
+  }
+  section.topic:first-of-type{ border-top:none; }
+  .topic-num{
+    font-family:'IBM Plex Mono', monospace;
+    color:var(--accent-strong);
+    font-size:0.82rem;
+    font-weight:600;
+  }
+  .topic h2{ font-size:1.32rem; margin:4px 0 12px; }
+  .topic p{ margin:0 0 12px; color:var(--ink); }
+  .topic p.soft{ color:var(--ink-soft); }
+  .topic ul, .topic ol{ margin:0 0 12px; padding-left:22px; }
+  .topic li{ margin-bottom:6px; }
+  .why-what-how{
+    display:grid; gap:10px;
+    margin:14px 0;
+    padding:14px 16px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:10px;
+    box-shadow:var(--shadow);
+  }
+  .why-what-how div{ font-size:0.95rem; }
+  .why-what-how b{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:0.72rem;
+    letter-spacing:0.06em;
+    text-transform:uppercase;
+    color:var(--accent-strong);
+    display:block;
+    margin-bottom:2px;
+  }
+  .callout{
+    display:flex; gap:10px;
+    padding:12px 14px;
+    background:var(--warn-soft);
+    border:1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
+    border-radius:10px;
+    margin:14px 0;
+    font-size:0.92rem;
+  }
+  .callout .tag{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:0.7rem;
+    text-transform:uppercase;
+    letter-spacing:0.05em;
+    color:var(--warn);
+    font-weight:700;
+    flex-shrink:0;
+    padding-top:2px;
+  }
+  code.term{ color:var(--code-ink); background:var(--surface-2); padding:1px 5px; border-radius:4px; }
+  .diagram{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:0.82rem;
+    background:var(--surface-2);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:16px 18px;
+    overflow-x:auto;
+    white-space:pre;
+    line-height:1.55;
+    color:var(--ink);
+  }
+
+  /* ---------- Question categories ---------- */
+  .qcat{
+    max-width:76ch;
+    padding:30px 0;
+    border-top:1px solid var(--border);
+    scroll-margin-top:16px;
+  }
+  .qcat-head{
+    display:flex; align-items:baseline; justify-content:space-between; gap:12px;
+    flex-wrap:wrap;
+  }
+  .qcat h2{ font-size:1.3rem; margin:2px 0 4px; }
+  .qcat-letter{
+    font-family:'IBM Plex Mono',monospace; color:var(--accent-strong); font-weight:700;
+  }
+  .qcat-toggle{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:0.75rem;
+    color:var(--accent-strong);
+    background:var(--accent-soft);
+    border:1px solid transparent;
+    border-radius:7px;
+    padding:5px 10px;
+    cursor:pointer;
+  }
+  .qcat-toggle:hover{ border-color:var(--accent); }
+  details.qa{
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:10px;
+    margin:10px 0;
+    box-shadow:var(--shadow);
+  }
+  details.qa summary{
+    cursor:pointer;
+    padding:13px 16px;
+    font-weight:600;
+    font-size:0.98rem;
+    list-style:none;
+    display:flex;
+    gap:10px;
+    align-items:flex-start;
+  }
+  details.qa summary::-webkit-details-marker{ display:none; }
+  details.qa summary::before{
+    content:"▸";
+    color:var(--accent);
+    flex-shrink:0;
+    transition:transform .15s ease;
+    margin-top:2px;
+  }
+  details.qa[open] summary::before{ transform:rotate(90deg); }
+  .qa-body{ padding:0 16px 16px; }
+  .qa-tests{
+    font-size:0.82rem;
+    color:var(--ink-faint);
+    margin:0 0 10px;
+    font-style:italic;
+  }
+  .qa-answer{ font-size:0.95rem; color:var(--ink); }
+  .qa-answer p{ margin:0 0 10px; }
+  .qa-answer ul{ margin:0 0 10px; padding-left:20px; }
+
+  .hidden{ display:none !important; }
+  .no-results{ color:var(--ink-faint); font-size:0.9rem; padding:20px 0; display:none; }
+
+  footer{
+    max-width:76ch; padding:30px 0 10px; color:var(--ink-faint); font-size:0.82rem;
+    border-top:1px solid var(--border);
+  }
+
+  @media (max-width:900px){
+    .layout{ grid-template-columns: 1fr; }
+    .sidebar{
+      position:relative; height:auto; border-right:none; border-bottom:1px solid var(--border);
+      padding:16px 16px 20px;
+    }
+    main{ padding:28px 18px 80px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <nav class="sidebar" id="sidebar">
+    <p class="brand">RepoMind AI</p>
+    <p class="brand-sub">Interview Reference · commit <span class="mono">d65e1ff</span></p>
+    <input id="search" type="search" placeholder="Search topics &amp; questions…" aria-label="Search reference">
+    <div class="no-results" id="noResults">No matches.</div>
+
+    <p class="nav-group-title">System Reference</p>
+    <ul class="navlist" id="navTopics"></ul>
+
+    <p class="nav-group-title">Interview Questions</p>
+    <ul class="navlist" id="navQuestions"></ul>
+  </nav>
+
+  <main id="main">
+    <div class="hero">
+      <p class="eyebrow">Technical interview prep · read-only reference</p>
+      <h1 class="title">RepoMind AI — Interview Reference</h1>
+      <p class="lede">
+        Everything below is grounded in the actual current codebase and
+        README, at commit <code class="mono">d65e1ff</code> — no invented
+        endpoints, numbers, or behavior. Twenty-five system-reference
+        sections come first, followed by twelve categories of interview
+        questions, each with what the interviewer is really testing and an
+        answer specific to this project rather than a generic textbook one.
+      </p>
+      <div class="meta-row">
+        <span>259 backend tests</span>
+        <span>19 Playwright E2E tests</span>
+        <span>5 CI jobs</span>
+        <span class="mono">FastAPI + Next.js + Postgres + Qdrant + Redis + Celery</span>
+      </div>
+    </div>
+
+    <div id="topics"></div>
+    <div id="questions"></div>
+
+    <footer>
+      Generated as a read-only study reference. Nothing in this document
+      was committed or pushed, and no project files were modified to
+      produce it.
+    </footer>
+  </main>
+</div>
+
+<script>
+/* ============================================================
+   CONTENT DATA
+   ============================================================ */
+const TOPICS = [
+{
+  n:1, id:"t1", title:"What problem RepoMind AI solves",
+  html:`
+  <p>Understanding an unfamiliar codebase is slow: reading files one at a
+  time, grepping for symbols, and manually tracing how pieces connect
+  before you can safely change anything. General-purpose chatbots don't
+  help much either — they weren't trained on <em>this</em> repository, so
+  they either refuse to answer specifics or confidently invent them.</p>
+  <p>RepoMind AI closes that gap with <b>Retrieval-Augmented Generation
+  (RAG)</b>: it clones and indexes a real GitHub repository into a vector
+  store, then answers questions, reviews code, debugs bugs, explains
+  files, summarizes architecture, and scans for security issues — all
+  grounded in chunks actually retrieved from that specific repository's
+  source, with the source files cited alongside every answer. If nothing
+  relevant is indexed, it says so rather than guessing.</p>`
+},
+{
+  n:2, id:"t2", title:"What RepoMind AI does end-to-end",
+  html:`
+  <p>A user registers and logs in (JWT auth), then submits a GitHub URL.
+  The backend validates the URL, checks the repository's size against
+  <code class="term">MAX_REPO_SIZE_MB</code>, and creates a
+  <code class="term">pending</code> row before handing ingestion to a
+  Celery worker and returning immediately.</p>
+  <p>The worker downloads the repository as a tarball, extracts it,
+  scans and chunks every text file, embeds every chunk, and upserts the
+  vectors into Qdrant — moving the repository through
+  <code class="term">pending → cloning → processing → completed</code>
+  (or <code class="term">failed</code>, with a clear reason) as it goes.</p>
+  <p>Once <code class="term">completed</code>, the user can: chat with the
+  repository (RAG), run a semantic search with no LLM round-trip, ask for
+  a file's explanation or review, describe a bug for AI-assisted
+  debugging, request an architecture overview, run a static security
+  scan, or hand a goal to the multi-step LangGraph agent and let it choose
+  which of the above to use on its own.</p>`
+},
+{
+  n:3, id:"t3", title:"Complete system architecture",
+  html:`
+  <p>Next.js is the only thing the browser talks to; every call to the
+  backend happens <em>server-side</em>, inside Server Components and
+  Server Actions — the browser never calls FastAPI directly, and the
+  session JWT lives only in an <code class="term">httpOnly</code>
+  cookie the browser JS never reads.</p>
+  <div class="diagram">Browser
+  │
+  ▼
+Next.js (frontend)         all API calls are server-side
+  │
+  ▼
+FastAPI (backend)
+  ├──► PostgreSQL   users, repositories, files, chunks, conversations
+  ├──► Qdrant       code-chunk vectors
+  ├──► Redis        Celery broker + rate-limit counters
+  └──► Celery worker
+           │
+           ▼
+     background ingestion (clone → scan → chunk → embed)</div>
+  <p class="soft">Deployed via Docker Compose (a bare profile for infra
+  only, and a <code class="term">full</code> profile for the complete
+  stack including <code class="term">api</code>,
+  <code class="term">celery-worker</code>, and
+  <code class="term">frontend</code>), and verified end-to-end in CI —
+  five GitHub Actions jobs cover backend tests, frontend typecheck/lint,
+  Docker image builds, the full Playwright E2E suite, and a full Docker
+  Compose smoke test with a real browser driving the containerized
+  stack.</p>`
+},
+{
+  n:4, id:"t4", title:"Repository ingestion flow",
+  html:`
+  <p>Ingestion is deliberately split across the request path and a
+  background worker so <code class="term">POST /repositories</code>
+  returns fast:</p>
+  <ol>
+    <li><b>Request path (FastAPI):</b> <code class="term">parse_github_url</code>
+      validates the URL against a strict, fully-anchored regex; <code class="term">fetch_repository</code>
+      calls the real GitHub API for metadata and rejects private repos and
+      anything over <code class="term">MAX_REPO_SIZE_MB</code>; a
+      <code class="term">Repository</code> row is created with status
+      <code class="term">pending</code>; <code class="term">ingest_repository_task.delay(...)</code>
+      queues the Celery task and the response returns immediately.</li>
+    <li><b>Worker path (Celery), inside <code class="term">ingest_repository</code>:</b>
+      status → <code class="term">cloning</code>; download the tarball from
+      GitHub (60s timeout); extract it with a path-traversal guard
+      (<code class="term">_safe_extract</code> resolves and prefix-checks
+      every member path before extracting); status → <code class="term">processing</code>;
+      walk the tree skipping build/VCS directories, hash and size-check
+      every file; delete any previous run's <code class="term">repository_files</code>/Qdrant
+      vectors (so a reindex starts clean); for every file, chunk its
+      content and persist <code class="term">repository_files</code>/<code class="term">code_chunks</code>
+      rows; embed every chunk in one batch call; upsert the vectors into
+      Qdrant; set <code class="term">file_count</code>/<code class="term">total_size_bytes</code>/<code class="term">last_indexed_at</code>
+      and status → <code class="term">completed</code>.</li>
+  </ol>
+  <p>Any exception anywhere in that pipeline is caught, rolled back, and
+  turned into status <code class="term">failed</code> with a truncated,
+  useful <code class="term">error_message</code> — never a silently stuck
+  row. The whole task is also bounded by a Celery
+  <code class="term">soft_time_limit</code>/<code class="term">time_limit</code>
+  (600s/660s) with a dedicated recovery path, so a pathologically slow or
+  hung run can't occupy a worker forever either.</p>`
+},
+{
+  n:5, id:"t5", title:"File parsing and chunking",
+  html:`
+  <div class="why-what-how">
+    <div><b>Why</b> A whole file is usually too large and too unfocused
+    for one embedding vector or one LLM context window to represent
+    well; retrieval needs smaller, addressable units.</div>
+    <div><b>What</b> A language-agnostic, <em>overlapping line-window</em>
+    chunker — no AST or syntax awareness (yet), by design, so it works
+    identically across every language a repository might contain.</div>
+    <div><b>How</b> Binary files are skipped via an extension list plus a
+    null-byte sniff of the first 8KB; everything else is decoded as UTF-8
+    (skipped if it isn't valid text) and split into windows of
+    <code class="term">CHUNK_MAX_LINES</code> lines (default 100), sliding
+    forward by <code class="term">max_lines − overlap_lines</code> each
+    step so consecutive chunks share <code class="term">CHUNK_OVERLAP_LINES</code>
+    lines (default 15) — this means a boundary never silently cuts a
+    function or explanation in half. <code class="term">reconstruct_file_content</code>
+    reverses this exactly, walking chunks in order and keeping only the
+    lines past what's already been covered, so a file's original content
+    can always be rebuilt losslessly from its chunks for the LLM-backed
+    endpoints (explain, review, debug, security-scan, architecture).</div>
+  </div>`
+},
+{
+  n:6, id:"t6", title:"Embedding flow",
+  html:`
+  <div class="why-what-how">
+    <div><b>Why</b> Semantic search needs every chunk represented as a
+    vector in the same space as the query; which model does that is a
+    cost/quality/dependency tradeoff worth making swappable, not
+    hardcoded.</div>
+    <div><b>What</b> One interface, <code class="term">embed_texts</code>/<code class="term">embed_query</code>,
+    behind an <code class="term">EMBEDDING_PROVIDER</code> setting: <code class="term">openai</code>
+    (default) or <code class="term">local</code>. Every caller — ingestion,
+    search, debug, chat, the agent's tools — goes through the same
+    interface, so switching providers is a config change, not a code
+    change.</div>
+    <div><b>How</b> The OpenAI provider batches requests at 100 texts per
+    call (comfortably under OpenAI's own 2048-per-request cap) and calls
+    <code class="term">text-embedding-3-small</code> (1536 dimensions).
+    The local provider runs <code class="term">fastembed</code> (ONNX
+    Runtime, CPU, <code class="term">all-MiniLM-L6-v2</code>, 384
+    dimensions) entirely in-process with no API key — chosen over
+    <code class="term">sentence-transformers</code> + PyTorch specifically
+    to avoid pulling in a multi-hundred-MB dependency tree, and kept out
+    of the default production install/image (~150MB saved) via a separate
+    <code class="term">requirements-local-embedding.txt</code>. Because
+    it's a synchronous, CPU-bound call, it's offloaded via
+    <code class="term">asyncio.to_thread</code> so it never blocks the
+    event loop.</div>
+  </div>
+  <div class="callout"><span class="tag">Constraint</span><span>Only one
+  provider is ever active at a time — never both simultaneously. Qdrant
+  fixes a collection's vector dimension for its lifetime, so mixing
+  1536-dim and 384-dim vectors in one collection isn't just discouraged,
+  it's structurally prevented (see the next section).</span></div>`
+},
+{
+  n:7, id:"t7", title:"Qdrant vector storage",
+  html:`
+  <div class="why-what-how">
+    <div><b>Why</b> A purpose-built vector database gives fast
+    approximate-nearest-neighbor search over embeddings, which Postgres
+    doesn't do natively; only three operations were ever needed
+    (create-collection, upsert, filtered search), so a thin REST wrapper
+    was chosen over pulling in the full <code class="term">qdrant-client</code>
+    SDK.</div>
+    <div><b>What</b> <code class="term">app/services/vector_store.py</code> —
+    a plain <code class="term">httpx</code> client hitting Qdrant's HTTP
+    API directly, mirroring the same "thin wrapper" style already used for
+    GitHub, OpenAI, and Anthropic in this codebase.</div>
+    <div><b>How</b> Collection names are provider-aware
+    (<code class="term">_collection_name()</code>): the <code class="term">openai</code>
+    provider uses the bare configured name (so existing deployments'
+    data never moves), any other provider gets a
+    <code class="term">_{provider}</code> suffix — so different-dimension
+    vectors physically cannot land in the same collection.
+    <code class="term">ensure_collection()</code> also checks an existing
+    collection's actual vector size before every upsert, raising a clear
+    error rather than a cryptic Qdrant one on a mismatch. Every point's
+    ID is the owning <code class="term">code_chunks.id</code> UUID itself
+    — no separate ID-mapping table needed — and every point's payload
+    carries <code class="term">repository_id</code>, which is what makes
+    per-repository filtering possible.</div>
+  </div>`
+},
+{
+  n:8, id:"t8", title:"Semantic search",
+  html:`
+  <p><code class="term">POST /repositories/{id}/search</code> embeds the
+  query text, then calls Qdrant's search with a
+  <code class="term">must: repository_id == this repo</code> filter and a
+  bounded <code class="term">limit</code> (1–50, default 10) — so a
+  search can never return another repository's (or another user's) code,
+  and can never return an unbounded number of results.</p>
+  <p>Qdrant returns hit IDs and scores only, not content — the endpoint
+  then joins those IDs back against Postgres with a <em>single</em>
+  <code class="term">CodeChunk.id.in_(...)</code> query (not one query
+  per hit) to fetch <code class="term">content</code>/<code class="term">file_path</code>,
+  and returns them sorted by similarity score, highest first.</p>`
+},
+{
+  n:9, id:"t9", title:"RAG chat flow",
+  html:`
+  <p><code class="term">POST /conversations/{id}/messages</code> is the
+  full RAG loop in one endpoint:</p>
+  <ol>
+    <li>Persist the user's message immediately.</li>
+    <li>Embed the message content.</li>
+    <li>Search Qdrant, scoped to the conversation's repository, top 5.</li>
+    <li>If nothing relevant comes back, short-circuit to a canned
+      "couldn't find any indexed code" reply — <em>without ever calling
+      the LLM</em> — rather than letting it improvise.</li>
+    <li>Otherwise, batch-fetch the matching chunks from Postgres, build
+      labeled context blocks (file path, line range, content), and call
+      Claude with a system prompt that says to answer <em>strictly</em>
+      from that retrieved context.</li>
+    <li>Persist the assistant's reply along with the exact
+      <code class="term">source_chunk_ids</code> it was grounded in, and
+      return both the reply and its resolved sources.</li>
+  </ol>
+  <p class="soft"><code class="term">GET /conversations/{id}/messages</code>
+  replays the whole thread, resolving every past reply's sources the same
+  way — batched into one query for the whole conversation, not one per
+  message (a real N+1 bug found and fixed — see topic 22).</p>`
+},
+{
+  n:10, id:"t10", title:"Claude LLM integration",
+  html:`
+  <div class="why-what-how">
+    <div><b>Why</b> Anthropic has no embeddings endpoint, so embeddings
+    (OpenAI/local) and chat generation (Anthropic) were always going to
+    be two separate providers regardless of configuration — keeping them
+    in separate modules reflects that reality instead of forcing one
+    "LLM provider" abstraction over two unrelated capabilities.</div>
+    <div><b>What</b> <code class="term">app/services/llm.py</code>'s
+    <code class="term">generate_response(system_prompt, user_message)</code> —
+    the single function every LLM-backed endpoint and every agent tool
+    calls, direct to Anthropic's Messages API over <code class="term">httpx</code>,
+    no SDK.</div>
+    <div><b>How</b> Each call is fully stateless — Anthropic itself
+    retains no memory between calls, so every caller rebuilds whatever
+    context it needs (retrieved chunks, file content, prior agent steps)
+    into that one request. Output is bounded by
+    <code class="term">DEFAULT_MAX_TOKENS</code> (1024) on every call, so
+    no response is ever unbounded. A missing key raises
+    <code class="term">LLMConfigError</code> → <code class="term">503</code>;
+    an upstream failure raises <code class="term">LLMAPIError</code> →
+    <code class="term">502</code> — never a raw crash either way.</div>
+  </div>`
+},
+{
+  n:11, id:"t11", title:"LangGraph agent architecture",
+  html:`
+  <div class="why-what-how">
+    <div><b>Why</b> Every other AI feature is a fixed pipeline — a
+    request comes in, a predetermined sequence runs, one response goes
+    out. Some goals genuinely need the model itself to decide, step by
+    step, which capability to reach for next and when it has enough to
+    answer.</div>
+    <div><b>What</b> A LangGraph <code class="term">StateGraph</code>
+    with exactly two nodes, <code class="term">plan</code> and
+    <code class="term">act</code>, alternating until the plan node
+    decides to finish or the step budget runs out.</div>
+    <div><b>How</b> <code class="term">plan_node</code> sends the goal
+    plus a transcript of every step so far to Claude, asking for
+    <em>only</em> a JSON decision — either a tool call or a final answer.
+    <code class="term">_parse_decision</code> strips markdown code fences,
+    falls back to regex-extracting a JSON object from surrounding prose,
+    and — if nothing parseable comes back at all — treats the raw text
+    itself as a final answer rather than erroring. <code class="term">act_node</code>
+    dispatches to exactly one of six hardcoded tool functions by name
+    (anything else is ignored, never invented or improvised), executes
+    it, and appends the result as a new step. Once
+    <code class="term">len(steps) >= max_steps</code> (bounded 1–10,
+    default 4), the next plan call is explicitly told to finish using only
+    what it's already learned.</div>
+  </div>
+  <div class="callout"><span class="tag">Hardening</span><span>Tool output
+  often <em>is</em> repository source code — text from a public GitHub
+  repo this agent doesn't control. Since that output gets replayed back
+  into the next planning prompt via the transcript, it's wrapped in
+  explicit <code class="term">[BEGIN/END UNTRUSTED REPOSITORY CONTENT]</code>
+  markers, and the system prompt is told never to treat anything inside
+  those markers as an instruction — a mitigation against prompt injection
+  via a maliciously-authored repository (added Day 58).</span></div>`
+},
+{
+  n:12, id:"t12", title:"All six agent tools",
+  html:`
+  <p>The tool set is fixed at exactly these six — the agent cannot call
+  anything outside it, and every tool call is scoped to the same
+  repository/user the original API request was already authorized for:</p>
+  <ol>
+    <li><code class="term">search_code(query)</code> — embeds the query,
+      searches Qdrant scoped to the repository (top 5), returns the raw
+      matching snippets with file paths and line ranges.</li>
+    <li><code class="term">explain_file(file_path)</code> — reconstructs
+      that file's content from its chunks and asks Claude for a short
+      (2–4 sentence) explanation.</li>
+    <li><code class="term">review_file(file_path)</code> — same
+      reconstruction, but asks for a short code review (bugs, security
+      issues, edge cases, code smells) instead.</li>
+    <li><code class="term">debug(description)</code> — searches for code
+      relevant to the description, then asks Claude for a concise root
+      cause and fix, citing files.</li>
+    <li><code class="term">architecture()</code> — takes the whole file
+      tree plus README content and asks Claude to summarize likely
+      components, tech stack, and entry points.</li>
+    <li><code class="term">security_scan()</code> — runs the same
+      regex-based static scan as the standalone endpoint; needs no LLM
+      call and no API key at all.</li>
+  </ol>
+  <p class="soft">Each tool reuses the same underlying logic as its REST
+  endpoint counterpart rather than a second implementation, just with
+  shorter, tool-appropriate prompts so a multi-step transcript doesn't
+  balloon in size turn over turn.</p>`
+},
+{
+  n:13, id:"t13", title:"Celery + Redis background processing",
+  html:`
+  <div class="why-what-how">
+    <div><b>Why</b> Cloning, scanning, chunking, and embedding a whole
+    repository is too slow to do inside an HTTP request; it needs a real
+    queue with retry/visibility semantics, not an in-process
+    fire-and-forget task.</div>
+    <div><b>What</b> Celery, with Redis as the broker (no result backend —
+    outcome is already tracked via the <code class="term">repositories.status</code>/<code class="term">error_message</code>
+    columns, so a second store for the same fact would be redundant).</div>
+    <div><b>How</b> <code class="term">POST /repositories</code> and
+    <code class="term">.../reindex</code> call <code class="term">.delay()</code>
+    inside a broad <code class="term">try/except</code> — if Redis itself
+    is unreachable, the repository fails fast into a clear
+    <code class="term">failed</code> status instead of the request
+    hanging. <code class="term">reindex</code>'s own concurrency guard is
+    an <em>atomic</em> <code class="term">UPDATE ... WHERE status NOT IN
+    (pending, cloning, processing)</code> — the ownership check and the
+    "not already in progress" check happen in the same statement, so two
+    concurrent reindex calls can't both queue a task.</div>
+  </div>
+  <div class="callout"><span class="tag">Real bug</span><span>A worker
+  process handles many tasks over its life, each getting a fresh event
+  loop from <code class="term">asyncio.run()</code> — but the async
+  Postgres engine's connection pool is a module-level singleton, and
+  asyncpg connections are bound to the loop that opened them. Without
+  disposing the pool at the end of every task, the <em>second</em> task
+  in a worker inherited a connection from the first task's now-dead loop
+  and crashed. Fixed by calling <code class="term">engine.dispose()</code>
+  inside the same still-open loop at the end of every task — found by
+  actually running two real tasks through a real worker, since the
+  single-task pytest coverage never exercised a second task in the same
+  process.</span></div>`
+},
+{
+  n:14, id:"t14", title:"PostgreSQL data model (high level)",
+  html:`
+  <p>Six tables, all UUID-keyed, all cascade-deleting downward:</p>
+  <ul>
+    <li><code class="term">users</code> — email (unique, indexed),
+      hashed password, active flag.</li>
+    <li><code class="term">repositories</code> — owned by a user
+      (indexed FK; unique on owner+URL so you can't add the same repo
+      twice), status enum, error message, file count, size.</li>
+    <li><code class="term">repository_files</code> — owned by a
+      repository (indexed FK; unique on repository+path), path,
+      language, size, content hash.</li>
+    <li><code class="term">code_chunks</code> — owned by both a
+      repository and a file (both indexed FKs), content, line range, and
+      the Qdrant point id (<code class="term">vector_id</code>).</li>
+    <li><code class="term">conversations</code> — owned by a repository
+      and a user (both indexed FKs).</li>
+    <li><code class="term">messages</code> — owned by a conversation
+      (indexed FK), role, content, and the JSONB
+      <code class="term">source_chunk_ids</code> array for grounded
+      assistant replies.</li>
+  </ul>
+  <p class="soft">Every index in the schema corresponds to an actual
+  <code class="term">WHERE</code> clause used somewhere in the code —
+  confirmed directly against the query patterns, not assumed — and Alembic
+  manages two migrations: the initial schema, and a later additive column
+  for <code class="term">source_chunk_ids</code>.</p>`
+},
+{
+  n:15, id:"t15", title:"Authentication and authorization",
+  html:`
+  <div class="why-what-how">
+    <div><b>Why</b> Stateless bearer tokens fit a single-API-process
+    architecture without a server-side session store; the real design
+    challenge in a multi-tenant app is authorization, not authentication
+    — making sure one user's ID in a URL can never reach another user's
+    data.</div>
+    <div><b>What</b> JWT (PyJWT, HS256, algorithm explicitly pinned —
+    never accepts <code class="term">alg: none</code> or a different
+    algorithm) for auth; bcrypt for password hashing; every
+    repository/conversation-scoped endpoint re-derives ownership from an
+    already-verified parent ID for authorization.</div>
+    <div><b>How</b> <code class="term">_get_owned_repository</code>/<code class="term">_get_owned_conversation</code>
+    gate every entry point; nested resources (files, chunks, search
+    results) are only ever reached <em>through</em> an already-checked
+    parent — there is no endpoint that accepts a bare chunk/file/message
+    ID with no ownership check at all. Even Qdrant search results are
+    filtered by <code class="term">repository_id</code> on top of that.
+    The password field is capped at 72 bytes deliberately — bcrypt
+    silently ignores anything past that, so capping the input prevents a
+    real truncation-collision footgun rather than just hoping nobody
+    hits it.</div>
+  </div>
+  <div class="callout"><span class="tag">Real bug</span><span>bcrypt's
+  hashing (~100–300ms) was originally called directly inside
+  <code class="term">async def register()</code>/<code class="term">login()</code>,
+  which blocks the whole event loop for that long — stalling every other
+  concurrent request that FastAPI worker process was serving. Fixed by
+  offloading both calls through <code class="term">asyncio.to_thread</code>,
+  preserving the exact short-circuit that skips <code class="term">verify_password</code>
+  entirely when no user was found.</span></div>`
+},
+{
+  n:16, id:"t16", title:"Rate limiting",
+  html:`
+  <div class="why-what-how">
+    <div><b>Why</b> Ingestion and every LLM-backed endpoint cost real
+    money and real time; without a limit, one user (or one bug in the
+    frontend) can exhaust the OpenAI/Anthropic budget or hammer GitHub's
+    API.</div>
+    <div><b>What</b> A hand-rolled Redis fixed-window counter — deliberately
+    not a library, since the only primitive needed is
+    <code class="term">INCR</code> + <code class="term">EXPIRE</code> —
+    with five scopes: <code class="term">ingestion</code> (20/hr/user),
+    <code class="term">ai</code> (20/min/user — search, chat, debug,
+    explain, review, architecture, security-scan),
+    <code class="term">agent</code> (5/min/user, the tightest, since one
+    call can trigger up to ten chained LLM calls),
+    <code class="term">auth_register</code> (30/hr/IP), and
+    <code class="term">auth_login</code> (40/hr/IP).</div>
+    <div><b>How</b> Each check does one <code class="term">INCR</code> on
+    a key like <code class="term">ratelimit:{scope}:{identifier}</code>,
+    setting an <code class="term">EXPIRE</code> only the first time it's
+    touched — so keys never accumulate indefinitely. It fails
+    <em>open</em>, not closed: a Redis outage lets requests through
+    (logged as a warning) rather than taking down every rate-limited
+    endpoint.</div>
+  </div>
+  <div class="callout"><span class="tag">Real bug</span><span>Live e2e
+  testing against a genuinely unreachable Redis found this was adding a
+  real 3 seconds to every single request via an unguarded socket
+  timeout — technically "not crashing," but still its own kind of
+  outage. Fixed with explicit short socket timeouts plus a short-lived
+  (10s) in-process circuit breaker: the first request after a failure
+  pays the bounded timeout, every one after that during the cooldown
+  returns immediately, and the very next call after the cooldown retries
+  for real.</span></div>`
+},
+{
+  n:17, id:"t17", title:"Security scanning",
+  html:`
+  <div class="why-what-how">
+    <div><b>Why</b> Not every security-relevant pattern needs an LLM's
+    judgment — a fixed set of well-known insecure patterns can be
+    caught deterministically, for free, with no API key and no
+    per-scan cost.</div>
+    <div><b>What</b> Eight compiled regex rules — hardcoded secrets,
+    private key material, <code class="term">eval</code>/<code class="term">exec</code>,
+    shell injection, insecure deserialization
+    (<code class="term">pickle</code>), unsafe
+    <code class="term">yaml.load</code>, SQL built via string
+    interpolation, and unsafe HTML injection — run against every
+    indexed file's reconstructed content.</div>
+    <div><b>How</b> Each rule is checked line by line so findings carry
+    an exact line number and a short snippet. A
+    <code class="term">MAX_LINE_LENGTH</code> cap (2000 chars, added Day
+    58) bounds the work done on any single pathologically long line — the
+    existing file-size limit bounds a file's <em>total</em> size, but not
+    one line's length, so a minified bundle or a data blob with no
+    newlines could otherwise still hand an unbounded string to every
+    regex.</div>
+  </div>`
+},
+{
+  n:18, id:"t18", title:"Structured logging and request IDs",
+  html:`
+  <div class="why-what-how">
+    <div><b>Why</b> Debugging a production failure from logs alone
+    requires knowing which log lines belong to the same request, and
+    machine-parseable logs matter once there's a real aggregator reading
+    them instead of a human staring at a terminal.</div>
+    <div><b>What</b> One JSON object per line in production, a short
+    human-readable line in development — same fields either way — plus a
+    request ID that ties every log line and every response together.</div>
+    <div><b>How</b> A middleware generates (or validates a well-formed
+    incoming) request ID, stores it in a <code class="term">contextvar</code>
+    so any log line emitted anywhere during that request — even deep
+    inside a service function that never saw the <code class="term">Request</code>
+    object — picks it up automatically, and returns it as an
+    <code class="term">X-Request-ID</code> response header on
+    <em>every</em> response, including an unhandled exception. The
+    frontend reads that header back into <code class="term">ApiError.requestId</code>
+    and appends a <code class="term">(reference: &lt;id&gt;)</code> suffix
+    to error messages, so a user-reported problem is traceable to a
+    specific backend log line.</div>
+  </div>
+  <div class="callout"><span class="tag">Real bug</span><span>Unhandled-exception
+  handling was deliberately implemented inside the middleware itself
+  rather than via <code class="term">@app.exception_handler(Exception)</code>,
+  because Starlette routes that specific case to
+  <code class="term">ServerErrorMiddleware</code>, which sits
+  <em>outside</em> user middleware and, by its own documented design,
+  re-raises the exception again after responding — which corrupted the
+  next test's database connection.</span></div>`
+},
+{
+  n:19, id:"t19", title:"Docker deployment",
+  html:`
+  <p>Two Compose profiles: the bare file (Postgres/Redis/Qdrant only —
+  unchanged since it was first introduced) and a
+  <code class="term">full</code> profile adding
+  <code class="term">api</code>, <code class="term">celery-worker</code>,
+  and <code class="term">frontend</code>. The backend Dockerfile has two
+  build targets — <code class="term">production</code> (default) and
+  <code class="term">with-local-embedding</code> — diverging
+  <em>before</em> <code class="term">pip install</code> so the default
+  image never pays for <code class="term">fastembed</code>'s ~150MB
+  unless it's actually needed. Both backend and frontend images run as
+  non-root users.</p>
+  <p>Every service in the <code class="term">full</code> profile has its
+  own healthcheck, each probing with a tool already guaranteed present in
+  that image rather than installing one just for this — Python's
+  <code class="term">urllib</code> for <code class="term">api</code>,
+  Node's <code class="term">http</code> module for
+  <code class="term">frontend</code>, <code class="term">celery inspect
+  ping</code> for the worker. The <code class="term">api</code> service's
+  own healthcheck probes <code class="term">/health/ready</code>, not
+  <code class="term">/health</code> — a Day 60 fix, since liveness alone
+  can't reflect a mid-life database outage the way a bounded readiness
+  check can.</p>`
+},
+{
+  n:20, id:"t20", title:"GitHub Actions CI pipeline",
+  html:`
+  <p>Five jobs, minimal permissions (<code class="term">contents:
+  read</code>), never a <code class="term">pull_request_target</code>
+  trigger (so fork PRs never get secret access):</p>
+  <ul>
+    <li><code class="term">backend</code> — pytest against a real Postgres
+      service container; every external call mocked.</li>
+    <li><code class="term">frontend</code> — <code class="term">next
+      typegen</code>, <code class="term">tsc --noEmit</code>,
+      <code class="term">eslint</code>.</li>
+    <li><code class="term">e2e</code> — the full Playwright suite against
+      real Postgres/Redis/Qdrant service containers and a real Celery
+      worker; deliberately no paid API keys, since the suite asserts the
+      graceful degradation both providers already need to have.</li>
+    <li><code class="term">docker</code> — builds both backend targets and
+      the frontend image with <code class="term">docker/build-push-action</code>
+      (never pushed anywhere), validates
+      <code class="term">docker compose config</code>.</li>
+    <li><code class="term">docker-smoke</code> — starts the real
+      <code class="term">full</code> profile with
+      <code class="term">--wait</code>, runs a dependency-free smoke
+      script, then drives a real Chromium browser through register → add
+      repository → view detail page → log out → confirm the protected
+      redirect, against the real containerized stack; always tears down
+      with <code class="term">down -v</code>, win or lose.</li>
+  </ul>
+  <p class="soft"><code class="term">e2e</code> depends on
+  <code class="term">backend</code>+<code class="term">frontend</code>;
+  <code class="term">docker-smoke</code> depends on
+  <code class="term">docker</code> — so an obviously broken push fails
+  fast before paying for the expensive jobs.</p>`
+},
+{
+  n:21, id:"t21", title:"Testing strategy",
+  html:`
+  <p>Three deliberately different tiers, each catching a different class
+  of bug:</p>
+  <ul>
+    <li><b>259 backend pytest tests</b> against a <em>real</em> Postgres
+      test database (models use Postgres-specific types a mock couldn't
+      faithfully stand in for), with every external call — GitHub,
+      OpenAI, Anthropic, Qdrant, Celery — mocked for speed and
+      determinism.</li>
+    <li><b>19 Playwright E2E tests</b> across 5 spec files, driving a real
+      browser against a real backend with real Postgres/Redis/Qdrant and
+      a real Celery worker — but still no paid API keys, so it verifies
+      the actual graceful-degradation UI paths rather than skipping
+      them.</li>
+    <li><b>Docker-level verification</b> — building the actual
+      Dockerfiles, validating the actual Compose config, and running a
+      production-like browser test against the actual containerized
+      stack — catching the class of bug that only exists in the
+      deployment artifact itself (a Dockerfile typo, a broken build
+      context, a healthcheck pointed at the wrong endpoint) that
+      application-level tests structurally cannot see.</li>
+  </ul>`
+},
+{
+  n:22, id:"t22", title:"Engineering problems encountered and their solutions",
+  html:`
+  <p>A representative, not exhaustive, list — each found by actually
+  running something for real, not by inspection alone:</p>
+  <ul>
+    <li><b>Cross-loop asyncpg reuse</b> crashing a worker's second task —
+      fixed by disposing the engine pool at the end of every Celery task
+      (topic 13).</li>
+    <li><b><code class="term">@app.exception_handler(Exception)</code></b>
+      re-raising after responding and corrupting the next test's DB
+      connection — fixed by moving unhandled-exception handling into the
+      request-ID middleware itself (topic 18).</li>
+    <li><b>Non-executable synthetic tarball directories</b> making
+      <code class="term">os.walk</code> silently find zero files on
+      Linux CI, invisible on Windows dev — a test-fixture bug, not an
+      application one, caught only once CI actually ran on Linux.</li>
+    <li><b>Frontend calling itself</b> in the full Docker Compose profile
+      — building with the native-dev
+      <code class="term">NEXT_PUBLIC_API_BASE_URL=localhost:8000</code>
+      baked in meant the frontend container tried to reach itself, since
+      every API call happens server-side inside that same container.
+      Fixed with a separate, Compose-only
+      <code class="term">COMPOSE_FRONTEND_API_BASE_URL</code> build
+      variable defaulting to the Compose-internal
+      <code class="term">http://api:8000</code>.</li>
+    <li><b>Frontend Docker UID collision</b> — <code class="term">useradd</code>
+      failed because <code class="term">node:20-slim</code> already ships
+      a <code class="term">node</code> user at UID 1000; fixed by reusing
+      that existing user instead of creating a colliding one.</li>
+    <li><b>Redis-unreachable request latency</b> (topic 16) and
+      <b>bcrypt blocking the event loop</b> (topic 15) — both found by
+      actually measuring real behavior under a real failure/load
+      condition, not by code review alone.</li>
+    <li><b>The same N+1 query pattern independently in three places</b> —
+      the security-scan endpoint, its identical agent-tool twin, and the
+      chat message-list endpoint — each issuing one Postgres query per
+      row instead of one batched <code class="term">.in_()</code> query;
+      fixed by applying the same batching pattern already used correctly
+      elsewhere in the codebase.</li>
+    <li><b>The <code class="term">api</code> healthcheck probing
+      liveness, not readiness</b> — meant a mid-life database outage
+      wasn't reflected in the container's own health status; fixed by
+      switching the Docker healthcheck to <code class="term">/health/ready</code>
+      (topic 25).</li>
+  </ul>`
+},
+{
+  n:23, id:"t23", title:"Performance improvements implemented",
+  html:`
+  <p>From a dedicated performance/resource audit, two fixes were
+  actually implemented (both described in topics 13, 15 and 9 above):</p>
+  <ul>
+    <li>Offloading bcrypt hash/verify calls off the event loop via
+      <code class="term">asyncio.to_thread</code>.</li>
+    <li>Batching the chat message-list endpoint's source-chunk lookups
+      into one query instead of one per message.</li>
+  </ul>
+  <p class="soft">Other findings from that same audit — local-embedding
+  batching, Qdrant upsert batching for very large repositories, chat
+  message pagination, the agent's growing per-step transcript — were
+  deliberately <em>not</em> implemented, since none had confirmed
+  evidence of a real-world impact at this project's scale, and the audit
+  explicitly recommended real production measurements before touching
+  them.</p>`
+},
+{
+  n:24, id:"t24", title:"Security hardening implemented",
+  html:`
+  <p>From a dedicated security audit, two fixes were implemented:</p>
+  <ul>
+    <li>The agent's untrusted-repository-content boundary (topic 11) —
+      mitigating prompt injection from malicious repository source.</li>
+    <li>The security scanner's per-line length cap (topic 17) — bounding
+      regex work against a pathologically long single line.</li>
+  </ul>
+  <p class="soft">The audit found <strong>no P0 or P1</strong> vulnerability
+  — no auth bypass, no IDOR, no SQL injection, no secret leakage. Several
+  other findings (JWT revocation, CORS tightening, OpenAPI exposure in
+  production, dependency-vulnerability scanning) were deliberately left
+  as documented, deferred tradeoffs rather than implemented, since each
+  either had no live exploit path today or was a reasonable
+  simplicity/security tradeoff at this project's scale.</p>`
+},
+{
+  n:25, id:"t25", title:"Production-readiness work implemented",
+  html:`
+  <p>From a dedicated observability/reliability audit, two changes were
+  implemented:</p>
+  <ul>
+    <li><b>Celery reliability + diagnostics</b> — a bounded
+      <code class="term">soft_time_limit</code>/<code class="term">time_limit</code>
+      (600s/660s) on the ingestion task, start/duration logging on both
+      success and failure, and a recovery path that marks a
+      timed-out repository <code class="term">failed</code> instead of
+      leaving it permanently stuck in <code class="term">cloning</code>/<code class="term">processing</code>
+      — closing a real gap where <code class="term">reindex</code>'s own
+      concurrency guard would otherwise refuse to act on a repository
+      that still looked "in progress" forever.</li>
+    <li><b>Frontend error correlation</b> — <code class="term">ApiError</code>
+      now captures the backend's <code class="term">X-Request-ID</code>
+      and surfaces it as a reference in user-facing error messages, plus
+      a root <code class="term">error.tsx</code> boundary for genuinely
+      unexpected failures, deliberately never surfacing Next.js's own
+      internal error digest as if it were the backend's request ID.</li>
+  </ul>
+  <p>Finally, the Docker <code class="term">api</code> healthcheck was
+  switched from <code class="term">/health</code> (liveness) to
+  <code class="term">/health/ready</code> (readiness) — verified live in
+  CI's <code class="term">docker-smoke</code> job, where Compose's own
+  <code class="term">--wait</code> gate had to observe the container
+  reach healthy status using the new probe.</p>`
+},
+];
+
+const QUESTION_CATEGORIES = [
+{ letter:"A", id:"qa", title:"Basic project questions", qs:[
+  { q:"In one or two sentences, what does RepoMind AI do?",
+    tests:"Can you summarize the whole project crisply, without rambling into implementation detail.",
+    a:`<p>It ingests a GitHub repository, indexes its source code into a
+    vector store, and uses Retrieval-Augmented Generation plus a
+    LangGraph multi-step agent to let a developer chat with, search,
+    review, debug, and security-scan that codebase — every answer
+    grounded in the actual retrieved source, with citations, not general
+    knowledge.</p>` },
+  { q:"Why RAG instead of just fine-tuning a model on the repository?",
+    tests:"Basic understanding of RAG vs. fine-tuning tradeoffs, and whether you can justify the actual architectural choice made here.",
+    a:`<p>Fine-tuning would need retraining every time a repository
+    changed or a new one was added — completely impractical for an
+    app meant to index arbitrary user-supplied repositories on demand.
+    RAG instead retrieves the relevant chunks at query time and hands
+    them to a general-purpose model as context, so adding or
+    re-indexing a repository (<code class="term">POST /repositories</code>,
+    <code class="term">.../reindex</code>) is just a data operation, not
+    a training run.</p>` },
+  { q:"Why does the README call this an \"autonomous\" platform?",
+    tests:"Whether the agent's actual autonomy is understood precisely, not overstated.",
+    a:`<p>Because of the LangGraph agent specifically: given a goal, it
+    decides for itself — turn by turn, without a human choosing each
+    step — which of six tools to call and when it has enough
+    information to answer, up to a bounded step budget. Every other
+    feature (chat, search, explain, etc.) is a fixed, predetermined
+    pipeline; only the agent actually makes its own sequencing
+    decisions.</p>` },
+  { q:"What happens if a user adds a private repository?",
+    tests:"Familiarity with a specific, real validation rule rather than assuming everything is accepted.",
+    a:`<p>It's rejected outright with a <code class="term">400</code> —
+    <code class="term">create_repository</code> checks
+    <code class="term">repo_info.private</code> from the GitHub API
+    response and refuses before ever creating a row or queuing
+    ingestion. Private-repository support isn't implemented.</p>` },
+  { q:"What's the very first thing that happens when someone submits a GitHub URL?",
+    tests:"Whether you know the request-time validation happens before any background work, not after.",
+    a:`<p><code class="term">parse_github_url</code> validates the string
+    against a fully-anchored regex restricted to GitHub's actual
+    owner/repo character set — before any network call happens at all.
+    Only a syntactically valid URL ever reaches the GitHub API call.</p>` },
+]},
+{ letter:"B", id:"qb", title:"Architecture questions", qs:[
+  { q:"Why does the browser never call FastAPI directly?",
+    tests:"Understanding of the server-only architecture and why it exists, not just that it does.",
+    a:`<p>The session JWT is stored only in an <code class="term">httpOnly</code>
+    cookie, which browser JavaScript can never read — so the only thing
+    that can attach it as an <code class="term">Authorization</code>
+    header is the Next.js server itself, inside Server Components and
+    Server Actions. This also means a compromised browser extension or
+    XSS payload can't exfiltrate the token via <code class="term">document.cookie</code>.</p>` },
+  { q:"Walk through what happens end-to-end when a repository is added, across every service involved.",
+    tests:"Whether you can trace one request across the whole stack, not just describe pieces in isolation.",
+    a:`<p>Next.js server action → FastAPI <code class="term">POST /repositories</code>
+    (validates via a real GitHub API call, creates a Postgres row,
+    queues a Celery task via Redis, returns immediately) → Celery worker
+    picks up the task → downloads/extracts/scans/chunks files (writing
+    <code class="term">repository_files</code>/<code class="term">code_chunks</code>
+    rows to Postgres) → embeds every chunk (OpenAI or local) → upserts
+    vectors into Qdrant → updates the repository's status in Postgres to
+    <code class="term">completed</code>. The frontend only ever learns
+    the outcome by polling/reloading the repository detail page — there's
+    no push/websocket notification.</p>` },
+  { q:"Why is ingestion split onto a Celery worker instead of running inline in the FastAPI request?",
+    tests:"Understanding of why background workers exist at all, and what the earlier (pre-Celery) approach was.",
+    a:`<p>Cloning, scanning, chunking, and embedding a whole repository
+    is far too slow for one HTTP request/response cycle. Ingestion
+    originally ran via FastAPI's own <code class="term">BackgroundTasks</code>,
+    which only survives as long as the API process itself does and gives
+    no retry or visibility if it silently fails — Celery + Redis replaced
+    that with a real queue.</p>` },
+  { q:"What's the actual difference between the two architecture diagrams in the README?",
+    tests:"Whether you distinguish deployment topology from conceptual data flow — a common confusion.",
+    a:`<p>"Deployment Architecture" shows the runtime/container
+    topology — which process talks to which service (Next.js → FastAPI →
+    Postgres/Qdrant/Redis/Celery). "How a Question Gets Answered" is the
+    conceptual RAG pipeline — ingestion, chunking, embedding, retrieval,
+    generation — independent of which containers those steps happen to
+    run in.</p>` },
+]},
+{ letter:"C", id:"qc", title:"RAG / LLM questions", qs:[
+  { q:"What happens if the RAG search finds nothing relevant?",
+    tests:"Whether hallucination-avoidance is understood as a deliberate design decision, not an edge case that was missed.",
+    a:`<p>The chat endpoint short-circuits to a fixed "couldn't find any
+    indexed code relevant to your question" reply and never calls Claude
+    at all in that case — deliberately, so the model is never put in a
+    position to improvise an answer with no real grounding.</p>` },
+  { q:"How is the LLM prevented from making things up beyond the retrieved context?",
+    tests:"Understanding of prompt design as the actual mechanism, and its limits.",
+    a:`<p>The system prompt explicitly instructs the model to answer
+    <em>strictly</em> from the retrieved context provided in the user
+    message, and to say so plainly if that context isn't enough — rather
+    than guessing. This is a prompt-level instruction, not a hard
+    technical guarantee; it relies on the model actually following it.</p>` },
+  { q:"Why is a separate embedding model used instead of asking Claude to embed text?",
+    tests:"Basic knowledge that Anthropic doesn't offer an embeddings API, and the resulting design consequence.",
+    a:`<p>Anthropic doesn't expose an embeddings endpoint at all, so
+    embeddings (OpenAI or local fastembed) and chat generation
+    (Anthropic) were always going to be two separate providers — this
+    is reflected directly in the codebase as two separate service
+    modules, not one merged "LLM" abstraction.</p>` },
+  { q:"How would you evaluate whether the local embedding provider is \"good enough\"?",
+    tests:"Whether you understand this hasn't actually been measured, and what a real evaluation would look like — tests intellectual honesty as much as technical knowledge.",
+    a:`<p>Honestly — it hasn't been evaluated here at all.
+    <code class="term">all-MiniLM-L6-v2</code> is a small, general-purpose
+    sentence-embedding model, not one specialized for code, and the
+    README explicitly says no retrieval-quality comparison against
+    OpenAI's embeddings has been done. A real evaluation would need a
+    labeled set of (query, relevant-chunk) pairs per repository and a
+    retrieval-quality metric like recall@k, run against both providers.</p>` },
+  { q:"What bounds the size of a single chat/search/debug prompt sent to the LLM?",
+    tests:"Whether context-window/cost bounding is understood as designed-in, and where the gaps are.",
+    a:`<p>Retrieved context is capped by the search limit — 5 chunks for
+    chat/debug, up to 50 for the standalone search endpoint (which
+    doesn't even call an LLM). Output is capped everywhere at 1024 tokens.
+    The one under-bounded case, found in a later audit, is
+    <code class="term">explain</code>/<code class="term">review</code> —
+    they send a whole reconstructed file, which for a file near the
+    500KB size cap is a genuinely large prompt with no additional
+    token-budget truncation.</p>` },
+]},
+{ letter:"D", id:"qd", title:"LangGraph / agent questions", qs:[
+  { q:"Why LangGraph instead of a prebuilt LangChain agent?",
+    tests:"Understanding of the deliberate minimalism choice and what it buys.",
+    a:`<p>Only the control-flow primitive was actually needed — alternate
+    a "plan" node and an "act" node until finished — so LangGraph's
+    <code class="term">StateGraph</code> is used purely for that loop,
+    keeping the same "thin wrapper, no extra SDK" style already used
+    everywhere else in this codebase (Claude is still called directly via
+    <code class="term">httpx</code>, no <code class="term">anthropic</code>
+    or <code class="term">langchain-anthropic</code> package involved).</p>` },
+  { q:"How does the agent decide when it's done?",
+    tests:"Understanding of the plan/act loop and its exit condition, and what happens at the step limit.",
+    a:`<p>On every planning turn, Claude returns either a tool call or a
+    <code class="term">finish</code> decision as JSON. If it chooses
+    <code class="term">finish</code>, the loop ends there. If it's still
+    going once <code class="term">max_steps</code> is reached, the next
+    planning prompt explicitly tells it to finish now using only what
+    it's already learned — and if it ignores that and tries another tool
+    call anyway, that response is discarded and its raw text is used as
+    the final answer instead.</p>` },
+  { q:"What happens if the planning LLM returns malformed or non-JSON text?",
+    tests:"Whether you understand the fallback chain and why the failure mode is safe, not silent.",
+    a:`<p><code class="term">_parse_decision</code> first tries strict
+    JSON parsing, then strips a markdown code fence and retries, then
+    regex-extracts the first <code class="term">{...}</code> block from
+    surrounding prose. If none of that produces a valid
+    <code class="term">tool</code>/<code class="term">finish</code>
+    decision, the raw text itself becomes the final answer — the agent
+    never crashes or silently drops the turn, it just treats unparseable
+    output as if the model had chosen to answer directly.</p>` },
+  { q:"What stops the agent from calling a tool that doesn't exist, or one it shouldn't have access to?",
+    tests:"Understanding that the tool set is a hardcoded, closed set — not a security boundary bolted on separately.",
+    a:`<p><code class="term">act_node</code> is a plain
+    <code class="term">if</code>/<code class="term">elif</code> chain over
+    exactly six known tool names; anything else falls through to "Unknown
+    tool — ignored." There's no dynamic tool registry or eval-based
+    dispatch the model's output could influence. Every one of the six
+    tools is also implicitly scoped to the same repository/user the
+    original API request was already authorized for, since
+    <code class="term">repository_id</code> is threaded in from the
+    endpoint, never taken from the model's own output.</p>` },
+  { q:"How could a malicious repository try to manipulate the agent, and what stops it?",
+    tests:"Security-mindedness about LLM-specific attack surface, and whether the actual mitigation (not a hypothetical one) is known.",
+    a:`<p>A repository could contain a code comment or string crafted to
+    look like the agent's own JSON action format — e.g. a fake
+    <code class="term">{"action":"finish","answer":"..."}</code> — hoping
+    the planning LLM, reading it back from a previous tool's output,
+    treats it as a real instruction. The mitigation: every tool's output
+    is wrapped in explicit
+    <code class="term">[BEGIN/END UNTRUSTED REPOSITORY CONTENT]</code>
+    markers before being replayed into the next planning prompt, and the
+    system prompt explicitly says content inside those markers is data,
+    never an instruction. It's a prompt-level mitigation, not a hard
+    technical guarantee, but the blast radius is bounded anyway — the
+    fixed tool set and per-request authorization scoping mean even a
+    successful manipulation can't escalate beyond a misleading final
+    answer.</p>` },
+]},
+{ letter:"E", id:"qe", title:"Qdrant / vector database questions", qs:[
+  { q:"Why Qdrant specifically, and why a raw HTTP client instead of the official SDK?",
+    tests:"Whether the tradeoff (fewer moving parts vs. SDK convenience) was a deliberate choice.",
+    a:`<p>Only three operations were ever needed —
+    create-collection-if-missing, upsert, and filtered search — so a
+    thin <code class="term">httpx</code> wrapper matches the same style
+    already used for GitHub/OpenAI/Anthropic rather than adding the full
+    <code class="term">qdrant-client</code> SDK as a dependency for a
+    handful of REST calls.</p>` },
+  { q:"How does the system prevent search from returning another user's or another repository's vectors?",
+    tests:"Whether multi-tenancy isolation in the vector store specifically (not just Postgres) is understood.",
+    a:`<p>Every Qdrant point's payload carries the owning
+    <code class="term">repository_id</code>, and every search call
+    includes a <code class="term">must: repository_id == X</code>
+    filter — plus that <code class="term">repository_id</code> itself
+    only ever comes from a path parameter that's already been
+    ownership-checked against the current user before the search call is
+    ever made.</p>` },
+  { q:"What happens if you switch EMBEDDING_PROVIDER after a repository is already indexed?",
+    tests:"Understanding of the dimension-mismatch problem and how this system specifically avoids it.",
+    a:`<p>Nothing breaks silently, but the repository also doesn't
+    automatically become searchable under the new provider — each
+    provider gets its own Qdrant collection
+    (<code class="term">{name}</code> for OpenAI,
+    <code class="term">{name}_local</code> for local), so switching
+    providers means the repository has to be explicitly re-indexed via
+    <code class="term">POST .../reindex</code> before it's searchable
+    under the new one. This is deliberate: automatically
+    re-embedding an entire repository as a side effect of a config
+    change isn't free and shouldn't happen silently.</p>` },
+  { q:"What would happen if two embedding providers' vectors ended up in the same collection?",
+    tests:"Understanding of why Qdrant's fixed-dimension-per-collection constraint matters, and the two-layer guard against it here.",
+    a:`<p>Qdrant fixes a collection's vector dimension for its lifetime,
+    so mixing 1536-dimensional (OpenAI) and 384-dimensional (local)
+    vectors in one collection isn't just bad practice, it's rejected
+    outright. This system guards against it twice: the collection-naming
+    scheme physically routes each provider to its own collection, and
+    <code class="term">ensure_collection()</code> additionally checks an
+    existing collection's actual configured vector size before every
+    upsert, raising a clear application-level error instead of letting a
+    mismatch surface as a cryptic Qdrant error later.</p>` },
+]},
+{ letter:"F", id:"qf", title:"FastAPI / backend questions", qs:[
+  { q:"Why FastAPI over Flask or Django here?",
+    tests:"Whether you can justify the choice against the project's actual needs, not just recite framework marketing.",
+    a:`<p>The whole backend is async end-to-end (async SQLAlchemy,
+    async httpx calls to four different external services), and FastAPI
+    is built around native <code class="term">async def</code> support
+    with automatic request validation via Pydantic and free OpenAPI docs
+    — all genuinely used here, not incidental.</p>` },
+  { q:"How are configuration and secrets validated, and what happens with a bad production config?",
+    tests:"Knowledge of a specific, real safety mechanism rather than \"env vars are used.\"",
+    a:`<p><code class="term">Settings</code> (pydantic-settings) has a
+    <code class="term">model_validator</code> that, only when
+    <code class="term">ENVIRONMENT=production</code>, refuses to
+    construct at all if <code class="term">JWT_SECRET_KEY</code> is
+    empty or still the placeholder default, or if
+    <code class="term">DATABASE_URL</code> still contains the placeholder
+    <code class="term">changeme</code> password — the app won't even
+    start with a forgeable secret or a guessable DB password in
+    production, rather than starting insecurely.</p>` },
+  { q:"How does the app avoid a slow or unreachable dependency hanging a request?",
+    tests:"Understanding of explicit timeout discipline as a recurring, deliberate pattern across the codebase.",
+    a:`<p>Every outbound call to GitHub, OpenAI, Anthropic, and Qdrant
+    sets its own explicit <code class="term">httpx</code> timeout (10–60s
+    depending on the call), and the readiness check's Postgres query is
+    wrapped in <code class="term">asyncio.wait_for</code> with a 3-second
+    bound. This is a repeated, deliberate pattern — an unreachable (as
+    opposed to actively refused) host can otherwise hang a connection
+    attempt for the OS's own TCP timeout, tens of seconds, with no
+    application-level bound at all.</p>` },
+  { q:"What's the difference between /health and /health/ready, and why do both exist?",
+    tests:"Liveness vs. readiness as a concept, applied precisely to this project's real implementation.",
+    a:`<p><code class="term">/health</code> is liveness — is the process
+    up at all, no dependency checks. <code class="term">/health/ready</code>
+    is readiness — can it actually serve requests right now, checked via
+    a single bounded (3s) <code class="term">SELECT 1</code> against
+    Postgres. Redis and Qdrant are deliberately excluded from readiness,
+    since both already degrade gracefully when unreachable (rate limiting
+    fails open, search/chat map to a clean 502/503) — flagging "not
+    ready" for either would report a condition that doesn't actually
+    block most requests.</p>` },
+]},
+{ letter:"G", id:"qg", title:"PostgreSQL questions", qs:[
+  { q:"How do you know the indexes in this schema are actually needed, and not just added speculatively?",
+    tests:"Evidence-based reasoning about database design, versus cargo-culting indexes onto every foreign key.",
+    a:`<p>Every indexed column was checked directly against the query
+    code that filters on it — <code class="term">code_chunks.repository_id</code>/<code class="term">repository_file_id</code>
+    are indexed and are exactly the columns every search/debug/file
+    query filters by; <code class="term">users.email</code> is indexed
+    and is exactly what login/register look up by. A later performance
+    audit deliberately declined to add a composite
+    <code class="term">(owner_id, created_at)</code> index on
+    repositories without real evidence of large per-user repository
+    counts, rather than adding it speculatively.</p>` },
+  { q:"Walk through what happens to a user's data (in Postgres) when their account or a repository is deleted.",
+    tests:"Understanding of cascade-delete relationships and referential integrity in this specific schema.",
+    a:`<p>Every foreign key in this schema is <code class="term">ondelete="CASCADE"</code>.
+    Deleting a repository cascades to its <code class="term">repository_files</code>,
+    <code class="term">code_chunks</code>, and
+    <code class="term">conversations</code> (which themselves cascade to
+    their <code class="term">messages</code>). Deleting a user cascades
+    to their repositories and conversations, and transitively everything
+    under those. Repository deletion also explicitly deletes the
+    matching Qdrant vectors <em>before</em> deleting the Postgres row —
+    if that Qdrant call fails, the repository intentionally stays around
+    (and deletable again) rather than leaving orphaned vectors with
+    nothing left in Postgres pointing at them.</p>` },
+  { q:"Why does the readiness check use a raw SELECT 1 instead of the ORM?",
+    tests:"Whether the specific implementation detail and its rationale (bypassing ORM overhead, minimal query) is known.",
+    a:`<p>It's the simplest possible query that proves the connection and
+    the database itself are actually responsive — no table access, no
+    ORM mapping overhead — wrapped in an explicit 3-second timeout so an
+    unreachable (not just slow) database can't hang the readiness check
+    indefinitely.</p>` },
+  { q:"How is the connection pool sized, and what's the actual math behind whether it's enough?",
+    tests:"Whether you understand SQLAlchemy's pooling defaults and can reason about connection budget under concurrency.",
+    a:`<p>The async engine is created with no explicit
+    <code class="term">pool_size</code>/<code class="term">max_overflow</code>,
+    so it uses SQLAlchemy's defaults — 5 base + 10 overflow = 15
+    connections, <em>per process</em>. Each <code class="term">api</code>
+    uvicorn worker process gets its own pool (they don't share one), plus
+    one more from the Celery worker — so a default
+    <code class="term">WEB_CONCURRENCY=2</code> deployment can open up to
+    roughly 2×15 + 15 = 45 Postgres connections at once, comfortably under
+    Postgres's own default <code class="term">max_connections</code> of
+    100, but worth re-sizing deliberately if concurrency is ever raised
+    well beyond 2.</p>` },
+]},
+{ letter:"H", id:"qh", title:"Celery / Redis questions", qs:[
+  { q:"Redis is used for two very different things here — what are they, and could they interfere with each other?",
+    tests:"Whether the dual-purpose use of one Redis instance is understood, and whether resource contention was considered.",
+    a:`<p>Redis is both the Celery broker (queuing ingestion tasks) and
+    the backing store for the rate limiter's fixed-window counters — two
+    unrelated concerns sharing one instance/config
+    (<code class="term">REDIS_URL</code>). They don't functionally
+    interfere since they use different key namespaces and Redis handles
+    both workloads (a queue and simple counters) trivially at this
+    project's scale; a genuinely high-throughput deployment might
+    eventually want to split them onto separate Redis instances, but
+    nothing here does that today.</p>` },
+  { q:"What happens if a Celery worker crashes in the middle of ingesting a repository?",
+    tests:"Whether the actual stuck-state gap and its fix (Day 59) are understood, including its residual limitation.",
+    a:`<p>Before a Day 59 fix, the repository could be left permanently
+    stuck at <code class="term">cloning</code> or <code class="term">processing</code>
+    with no way to recover — worse, <code class="term">reindex</code>'s
+    own concurrency guard would refuse to act on it precisely because it
+    still looked "in progress." The fix adds a bounded Celery
+    <code class="term">soft_time_limit</code>/<code class="term">time_limit</code>
+    (600s/660s) plus a dedicated recovery coroutine that marks the
+    repository <code class="term">failed</code> if the time limit fires.
+    This specifically covers a <em>hung</em> task; an actual hard process
+    crash (OOM-kill, <code class="term">docker compose down</code>
+    mid-task) is a different, rarer failure mode this fix doesn't fully
+    cover.</p>` },
+  { q:"Why is there no Celery result backend configured?",
+    tests:"Whether you understand result backends as an optional feature, and why omitting one here is deliberate rather than an oversight.",
+    a:`<p>Nothing in this app ever needs a task's return value — the
+    ingestion task's outcome is already tracked via the
+    <code class="term">repositories.status</code>/<code class="term">error_message</code>
+    columns in Postgres, so a Celery result backend would just be a
+    second, redundant place to store the same fact, with its own storage
+    cost in Redis.</p>` },
+  { q:"On native Windows, --pool=solo is used for the worker; in Docker/CI it isn't. Why?",
+    tests:"Cross-platform Celery pool knowledge, applied to this project's actual documented reasoning.",
+    a:`<p>Celery's default <code class="term">prefork</code> pool needs
+    <code class="term">os.fork()</code>, which Windows doesn't have —
+    <code class="term">--pool=solo</code> is the documented workaround
+    for native Windows development. Linux (both the Docker containers and
+    the GitHub Actions runners) has real <code class="term">fork()</code>,
+    so the default prefork pool works as-is there — and it's specifically
+    the prefork pool that Celery's <code class="term">time_limit</code>/<code class="term">soft_time_limit</code>
+    support requires; <code class="term">solo</code> doesn't enforce time
+    limits at all, a known Celery limitation, not a bug in this
+    project's own code.</p>` },
+]},
+{ letter:"I", id:"qi", title:"Docker / CI-CD questions", qs:[
+  { q:"Why does the backend Dockerfile have two build targets instead of one?",
+    tests:"Understanding of the actual dependency-size tradeoff and where the split happens.",
+    a:`<p><code class="term">production</code> (default) installs only
+    <code class="term">requirements.txt</code>;
+    <code class="term">with-local-embedding</code> additionally installs
+    <code class="term">fastembed</code> and its ONNX/tokenizer dependency
+    tree (~150MB). They diverge <em>before</em> the
+    <code class="term">pip install</code> step specifically so a plain
+    <code class="term">docker build</code> with no target specified —
+    which defaults to whichever stage is last in the file, deliberately
+    <code class="term">production</code> — never pays for that ~150MB
+    unless <code class="term">EMBEDDING_PROVIDER=local</code> is actually
+    in use.</p>` },
+  { q:"Why does the docker-smoke CI job rebuild images that the docker job already built?",
+    tests:"Understanding of GitHub Actions job isolation and why this duplication is a deliberate tradeoff, not an oversight.",
+    a:`<p>GitHub Actions jobs run in separate, disposable VMs with no way
+    to share locally-built Docker images between them without pushing to
+    a registry — which is explicitly out of scope here (no
+    <code class="term">docker push</code>, no registry login anywhere in
+    the workflow). <code class="term">docker-smoke</code> depends on
+    <code class="term">docker</code> only as a fail-fast gate — so it
+    doesn't spend several minutes starting the full stack when the
+    images don't even build — not for image reuse.</p>` },
+  { q:"How does CI know when the full Docker Compose stack is actually ready, instead of just guessing with a sleep?",
+    tests:"Knowledge of Compose's --wait flag and healthcheck-gated startup versus a fixed-delay anti-pattern.",
+    a:`<p><code class="term">docker compose --profile full up -d --build
+    --wait --wait-timeout 180</code> blocks until every service with a
+    healthcheck reports healthy (or fails after 180s) — driven entirely
+    by each service's own <code class="term">healthcheck:</code> block
+    (Postgres's <code class="term">pg_isready</code>, the API's
+    <code class="term">/health/ready</code>, etc.), never a fixed sleep
+    that would be either flaky (too short) or wasteful (too long).</p>` },
+  { q:"What GitHub Actions permissions does this workflow use, and why does that matter?",
+    tests:"Security awareness of CI configuration itself, not just the application it builds.",
+    a:`<p>Workflow-level <code class="term">permissions: contents:
+    read</code> — least privilege, no write access granted anywhere. It
+    also uses the regular <code class="term">pull_request</code> trigger,
+    never <code class="term">pull_request_target</code>, which matters
+    because <code class="term">pull_request_target</code> would run with
+    access to repo secrets even for a fork's PR — a well-known CI supply-chain
+    risk this workflow avoids by construction.</p>` },
+  { q:"What happens to a CI run's artifacts (logs, Playwright reports) on failure, and could they leak secrets?",
+    tests:"Whether diagnostic-artifact hygiene was actually considered, not just \"there are logs.\"",
+    a:`<p>Both <code class="term">e2e</code> and
+    <code class="term">docker-smoke</code> upload their own Playwright
+    HTML report on failure, and <code class="term">docker-smoke</code>
+    additionally captures <code class="term">docker compose ps</code>/<code class="term">logs</code>
+    always, win or lose. No real secret can appear in any of it, because
+    no real secret is ever configured in CI at all — only disposable,
+    hardcoded CI-only placeholder values and the workflow's own automatic,
+    scoped <code class="term">GITHUB_TOKEN</code>.</p>` },
+]},
+{ letter:"J", id:"qj", title:"Security questions", qs:[
+  { q:"How does the app prevent one user from accessing another user's repository by guessing or changing an ID in the URL (IDOR)?",
+    tests:"The single most important authorization question for a multi-tenant app — tests whether the actual mechanism, not just \"we check ownership,\" is understood.",
+    a:`<p>Every entry point re-derives ownership from a path parameter
+    before doing anything else — <code class="term">_get_owned_repository</code>/<code class="term">_get_owned_conversation</code>
+    query <code class="term">WHERE id = X AND owner_id/user_id =
+    current_user.id</code>, returning a plain 404 (not a 403, so an
+    attacker can't even distinguish "doesn't exist" from "not yours") if
+    it doesn't match. Every nested resource — files, chunks, messages,
+    search results — is only ever reached <em>through</em> that
+    already-checked parent; there's no endpoint that accepts a bare
+    chunk/file/message ID with no ownership check upstream of it. Even
+    <code class="term">reindex</code>'s ownership check is embedded
+    directly inside its atomic <code class="term">UPDATE ... WHERE</code>,
+    closing the gap between checking and acting.</p>` },
+  { q:"Is there any SQL injection risk in this codebase?",
+    tests:"Whether you actually looked, versus assuming an ORM makes this a non-question.",
+    a:`<p>No raw, string-interpolated SQL exists anywhere in the
+    application — every query uses SQLAlchemy's parameterized
+    <code class="term">select()</code>/<code class="term">.where()</code>/<code class="term">.in_()</code>.
+    The one raw-SQL usage in the whole codebase is
+    <code class="term">text("SELECT 1")</code> in the readiness check —
+    a static string with zero interpolation.</p>` },
+  { q:"How are passwords and JWTs kept out of the logs?",
+    tests:"Whether this is a tested guarantee or just an assumed one.",
+    a:`<p>This isn't just assumed — there's a dedicated regression test
+    that registers a user, hits several endpoints, and asserts that
+    none of five configured secrets (JWT secret, DB URL, OpenAI key,
+    Anthropic key, GitHub token) ever appears in any captured log
+    record, across every field including the structured "extra" data
+    each log line can carry.</p>` },
+  { q:"Could a crafted repository (e.g. its README or a filename) inject a prompt into the LLM-backed endpoints?",
+    tests:"Awareness that prompt injection isn't only an agent-specific risk, and precision about what actually mitigates it where.",
+    a:`<p>Every one-shot LLM endpoint (explain, review, debug,
+    architecture, chat) already wraps retrieved content in a fenced code
+    block with an instruction to answer only from what's given — a
+    prompt-level mitigation, same idea as the agent's untrusted-content
+    boundary, but without the agent's extra risk of that content
+    influencing a <em>parsed</em> decision, since these endpoints only
+    ever produce free-text output. The dedicated untrusted-content
+    boundary (topic 11) exists specifically for the agent, because it's
+    the one place retrieved content re-enters the same LLM context that
+    makes control-flow decisions.</p>` },
+  { q:"What's the biggest security-relevant risk left unaddressed in this project, and why wasn't it fixed?",
+    tests:"Honesty and judgment about real, disclosed tradeoffs rather than claiming perfection.",
+    a:`<p>No JWT revocation mechanism — tokens are stateless with a fixed
+    expiry, so a leaked token stays valid until it naturally expires,
+    with no way to force "log out everywhere" or invalidate on a password
+    change. It was deliberately left unaddressed after a security audit
+    judged it a reasonable complexity/security tradeoff at this
+    project's scale, not an oversight — implementing it would need either
+    a token-version column checked on every request or a full
+    refresh-token architecture.</p>` },
+]},
+{ letter:"K", id:"qk", title:"Performance questions", qs:[
+  { q:"What was the single highest-priority performance issue found in this project, and how was it fixed?",
+    tests:"Whether you can name a specific, real, already-fixed issue rather than a generic \"we optimized queries\" answer.",
+    a:`<p>bcrypt's password hashing/verification was called directly
+    inside <code class="term">async def register()</code>/<code class="term">login()</code>,
+    genuinely blocking that FastAPI worker's entire event loop for
+    ~100–300ms per call — stalling every other concurrent request that
+    process was serving, not just the auth request itself. Fixed by
+    wrapping both calls in <code class="term">asyncio.to_thread</code>,
+    with zero change to the hashing algorithm, cost factor, or observable
+    behavior.</p>` },
+  { q:"Describe an N+1 query problem you'd expect to find in a system like this, and how you'd verify one actually exists.",
+    tests:"Whether N+1 is understood conceptually AND whether you'd reach for evidence (not guessing) — this project actually found and fixed three real instances this way.",
+    a:`<p>Loading a conversation's full message history and, for each
+    message, separately querying its cited source chunks — one query per
+    message instead of one batched query for the whole conversation. To
+    verify it for real (as this project did), hook a SQLAlchemy
+    <code class="term">before_cursor_execute</code> event during the
+    request and count statements matching the chunks table specifically,
+    rather than assuming from code review alone. That's exactly how this
+    exact bug — plus two more identical instances in the security-scan
+    endpoint and its agent-tool twin — were confirmed and fixed here.</p>` },
+  { q:"How would you measure whether a given endpoint is actually slow in this app, without adding a metrics stack?",
+    tests:"Whether existing observability is understood as already sufficient for this, without reflexively reaching for new infrastructure.",
+    a:`<p>Every request already logs its own <code class="term">duration_ms</code>
+    via the request-ID middleware — filtering structured logs for a
+    specific path already answers "is this slow" without any new
+    instrumentation. A later audit concluded a full metrics stack
+    (Prometheus/Grafana/OpenTelemetry) wouldn't add real value at this
+    project's scale, since the existing structured logs already answer
+    the same questions a basic metrics stack would.</p>` },
+  { q:"What's still a known, unaddressed performance risk in this codebase?",
+    tests:"Honesty about scope limits and whether you distinguish \"found and documented\" from \"fixed.\"",
+    a:`<p>A single very large repository's embedding vectors are upserted
+    into Qdrant in one unbatched HTTP call with a fixed 30-second timeout
+    — for a repository with many thousands of chunks, that's one very
+    large request whose timeout doesn't scale with payload size. It was
+    documented in a performance audit but deliberately not fixed without
+    real evidence from production-scale repository sizes.</p>` },
+]},
+{ letter:"L", id:"ql", title:"Failure-handling / production questions", qs:[
+  { q:"If OpenAI or Anthropic is down, what does a user actually experience?",
+    tests:"Whether graceful degradation for external dependencies is a concrete, testable behavior here — not just a design principle stated in the abstract.",
+    a:`<p>A clean, mapped HTTP status — <code class="term">503</code> if
+    the key itself is missing/misconfigured
+    (<code class="term">EmbeddingConfigError</code>/<code class="term">LLMConfigError</code>),
+    <code class="term">502</code> if the provider itself errors or is
+    unreachable (<code class="term">EmbeddingAPIError</code>/<code class="term">LLMAPIError</code>) —
+    never a raw crash or a hung request. This exact behavior is what the
+    real Playwright E2E suite asserts, since it deliberately runs with no
+    paid API keys configured at all.</p>` },
+  { q:"If Redis goes down entirely, what breaks and what keeps working?",
+    tests:"Understanding of fail-open vs. fail-closed as applied to two different Redis-dependent features in this same app.",
+    a:`<p>Two different behaviors for two different uses of the same
+    Redis instance: rate limiting fails <em>open</em> — requests are
+    allowed through with a logged warning, so an outage never blocks
+    traffic (protected by a short-lived circuit breaker so it doesn't
+    also add multi-second latency to every request). Celery, on the
+    other hand, needs Redis to actually queue anything — so
+    <code class="term">POST /repositories</code>/<code class="term">.../reindex</code>
+    fail <em>fast</em> into a clear <code class="term">failed</code>
+    status with a specific message, rather than hanging or silently
+    losing the request.</p>` },
+  { q:"How would you know, from logs alone, why a specific repository's ingestion failed?",
+    tests:"Whether the actual diagnostic path (not a hypothetical one) through this project's real logging is known.",
+    a:`<p>Ingestion logs when it starts (repository ID only), and on
+    failure logs the exception with its traceback plus elapsed time —
+    every log line carrying the same request-independent context. The
+    <code class="term">repositories.error_message</code> column also
+    stores a truncated, human-readable version of the same failure
+    directly, visible on the repository's detail page without needing
+    log access at all.</p>` },
+  { q:"What's the actual, current CI-verified proof that this whole system works together, not just in isolation?",
+    tests:"Whether you can point to a specific, real verification artifact rather than an assertion.",
+    a:`<p>The <code class="term">docker-smoke</code> CI job: it builds
+    the real Docker images, starts the real <code class="term">full</code>
+    Compose profile, waits for every service's real healthcheck
+    (including the API's <code class="term">/health/ready</code> check,
+    which itself proves Postgres connectivity) to report healthy with no
+    fixed sleep, then drives an actual Chromium browser through register
+    → add a repository → view its detail page → log out → confirm the
+    protected redirect — against the real containerized frontend, API,
+    Postgres, and Redis, then tears the whole stack down. That's the one
+    piece of verification that no unit or mocked-service test could ever
+    provide.</p>` },
+  { q:"If you had one more day on this project, what would you fix first and why?",
+    tests:"Prioritization judgment grounded in this project's actual, documented findings — not a generic wishlist answer.",
+    a:`<p>The stuck-ingestion recovery gap's one remaining rough edge: the
+    Day 59 fix only reliably recovers a repository when Celery's
+    <em>soft</em> time limit is the thing that fires and gets caught; a
+    genuine worker process crash (OOM-kill, a forced
+    <code class="term">docker compose down</code> mid-task) can still
+    leave a repository stuck with no automatic recovery. A small
+    stale-ingestion sweep — flip a repository stuck in
+    <code class="term">cloning</code>/<code class="term">processing</code>
+    past some generous age threshold to eligible-for-reindex — would
+    close that last gap without needing a new scheduler dependency.</p>` },
+]},
+];
+
+/* ============================================================
+   RENDER
+   ============================================================ */
+const topicsRoot = document.getElementById('topics');
+const navTopics = document.getElementById('navTopics');
+TOPICS.forEach(t=>{
+  const sec = document.createElement('section');
+  sec.className='topic'; sec.id=t.id;
+  sec.dataset.search = (t.title + ' ' + t.html).toLowerCase();
+  sec.innerHTML = `<div class="topic-num">${String(t.n).padStart(2,'0')} / 25</div><h2>${t.title}</h2>${t.html}`;
+  topicsRoot.appendChild(sec);
+  const li=document.createElement('li');
+  li.innerHTML=`<a href="#${t.id}"><span class="num">${String(t.n).padStart(2,'0')}</span>${t.title}</a>`;
+  navTopics.appendChild(li);
+});
+
+const questionsRoot = document.getElementById('questions');
+const navQuestions = document.getElementById('navQuestions');
+QUESTION_CATEGORIES.forEach(cat=>{
+  const sec = document.createElement('section');
+  sec.className='qcat'; sec.id=cat.id;
+  const head = document.createElement('div');
+  head.className='qcat-head';
+  head.innerHTML = `<h2><span class="qcat-letter">${cat.letter}.</span> ${cat.title}</h2>
+    <button class="qcat-toggle" type="button" data-cat="${cat.id}" data-state="closed">Expand all</button>`;
+  sec.appendChild(head);
+  cat.qs.forEach((qa,i)=>{
+    const det = document.createElement('details');
+    det.className='qa';
+    det.dataset.search = (qa.q+' '+qa.tests+' '+qa.a).toLowerCase();
+    det.innerHTML = `<summary>${qa.q}</summary>
+      <div class="qa-body">
+        <p class="qa-tests">Tests: ${qa.tests}</p>
+        <div class="qa-answer">${qa.a}</div>
+      </div>`;
+    sec.appendChild(det);
+  });
+  questionsRoot.appendChild(sec);
+  const li=document.createElement('li');
+  li.innerHTML=`<a href="#${cat.id}"><span class="num">${cat.letter}</span>${cat.title}</a>`;
+  navQuestions.appendChild(li);
+});
+
+/* ---- expand/collapse per category ---- */
+document.querySelectorAll('.qcat-toggle').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    const sec = document.getElementById(btn.dataset.cat);
+    const opening = btn.dataset.state === 'closed';
+    sec.querySelectorAll('details.qa').forEach(d=> d.open = opening);
+    btn.dataset.state = opening ? 'open':'closed';
+    btn.textContent = opening ? 'Collapse all' : 'Expand all';
+  });
+});
+
+/* ---- search filter (topics + questions) ---- */
+const searchInput = document.getElementById('search');
+const noResults = document.getElementById('noResults');
+searchInput.addEventListener('input', ()=>{
+  const q = searchInput.value.trim().toLowerCase();
+  let anyVisible = false;
+
+  document.querySelectorAll('section.topic').forEach(sec=>{
+    const match = !q || sec.dataset.search.includes(q);
+    sec.classList.toggle('hidden', !match);
+    if(match) anyVisible = true;
+  });
+  document.querySelectorAll('.navlist li').forEach(li=>{
+    const href = li.querySelector('a').getAttribute('href').slice(1);
+    const target = document.getElementById(href);
+    if(!target) return;
+    const isTopic = target.classList.contains('topic');
+    const isCat = target.classList.contains('qcat');
+    if(isTopic){ li.classList.toggle('hidden', target.classList.contains('hidden')); }
+  });
+
+  document.querySelectorAll('.qcat').forEach(cat=>{
+    let catHasMatch = false;
+    cat.querySelectorAll('details.qa').forEach(d=>{
+      const match = !q || d.dataset.search.includes(q);
+      d.classList.toggle('hidden', !match);
+      if(match){ catHasMatch = true; if(q) d.open = true; }
+    });
+    cat.classList.toggle('hidden', !catHasMatch);
+    if(catHasMatch) anyVisible = true;
+    const navLi = document.querySelector(`a[href="#${cat.id}"]`)?.closest('li');
+    if(navLi) navLi.classList.toggle('hidden', !catHasMatch);
+  });
+
+  noResults.style.display = anyVisible ? 'none' : 'block';
+});
+
+/* ---- active-section highlight on scroll ---- */
+const allLinks = [...document.querySelectorAll('.navlist a')];
+const allSections = [...document.querySelectorAll('section.topic, section.qcat')];
+const io = new IntersectionObserver((entries)=>{
+  entries.forEach(en=>{
+    if(en.isIntersecting){
+      allLinks.forEach(a=>a.classList.remove('active'));
+      const link = document.querySelector(`a[href="#${en.target.id}"]`);
+      if(link) link.classList.add('active');
+    }
+  });
+}, { rootMargin: '-10% 0px -75% 0px' });
+allSections.forEach(s=>io.observe(s));
+</script>
+</body>
+</html>
