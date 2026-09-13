@@ -2,7 +2,13 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { ApiError, explainRepositoryFile, getRepository, listRepositoryFiles } from "@/lib/api";
+import {
+  ApiError,
+  describeApiError,
+  explainRepositoryFile,
+  getRepository,
+  listRepositoryFiles,
+} from "@/lib/api";
 import { deleteSession, getSessionToken } from "@/lib/session";
 
 export default async function ExplainFilePage(
@@ -47,8 +53,7 @@ export default async function ExplainFilePage(
     if (err instanceof ApiError && err.status === 404) {
       notFound();
     }
-    explainError =
-      err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
+    explainError = describeApiError(err);
   }
 
   return (

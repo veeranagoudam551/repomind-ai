@@ -26,6 +26,8 @@ import io
 import tarfile
 import uuid
 
+import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.repository import Repository, RepositoryStatus
@@ -138,5 +140,101 @@ async def test_worker_survives_two_ingestion_tasks_in_a_row(db_session, monkeypa
         updated_two = await verify_session.get(Repository, repo_two.id)
         assert updated_one.status == RepositoryStatus.COMPLETED
         assert updated_two.status == RepositoryStatus.COMPLETED
+
+    await task_engine.dispose()
+
+
+class _NoopEngine:
+    """Stands in for app.core.database.engine in tests that exercise
+    _mark_failed_after_timeout directly through db_session (a single
+    already-open connection, not a real pool) - there's nothing meaningful
+    to dispose there, and disposing the real module-level engine as a side
+    effect of a unit test would be reaching into global state this test
+    doesn't own."""
+
+    async def dispose(self) -> None:
+        return None
+
+
+async def test_mark_failed_after_timeout_sets_failed_status_and_message(
+    db_session, monkeypatch
+):
+    # Day 59: the recovery path app.tasks.ingest_repository_task falls back
+    # to when a Celery soft time limit's SoftTimeLimitExceeded unwinds
+    # outside ingest_repository's own try/except (see that function's own
+    # comment on why that can happen) - tested directly here, independent
+    # of the signal/asyncio.run() plumbing itself.
+    repository = await _make_repository(db_session)
+    repository.status = RepositoryStatus.PROCESSING
+    await db_session.commit()
+
+    monkeypatch.setattr("app.tasks.AsyncSessionLocal", lambda: db_session)
+    monkeypatch.setattr("app.tasks.engine", _NoopEngine())
+
+    from app.tasks import _TIMEOUT_ERROR_MESSAGE, _mark_failed_after_timeout
+
+    await _mark_failed_after_timeout(repository.id)
+
+    updated = await db_session.get(Repository, repository.id)
+    assert updated.status == RepositoryStatus.FAILED
+    assert updated.error_message == _TIMEOUT_ERROR_MESSAGE
+
+
+async def test_mark_failed_after_timeout_does_not_overwrite_a_completed_repository(
+    db_session, monkeypatch
+):
+    # Guards the race where ingestion actually finished successfully at
+    # essentially the same moment the time limit fired - the recovery path
+    # must never clobber a real COMPLETED result with a spurious FAILED one.
+    repository = await _make_repository(db_session)
+    repository.status = RepositoryStatus.COMPLETED
+    await db_session.commit()
+
+    monkeypatch.setattr("app.tasks.AsyncSessionLocal", lambda: db_session)
+    monkeypatch.setattr("app.tasks.engine", _NoopEngine())
+
+    from app.tasks import _mark_failed_after_timeout
+
+    await _mark_failed_after_timeout(repository.id)
+
+    updated = await db_session.get(Repository, repository.id)
+    assert updated.status == RepositoryStatus.COMPLETED
+
+
+async def test_ingest_repository_task_recovers_repository_on_soft_time_limit(
+    db_session, monkeypatch
+):
+    # End-to-end version of the two tests above: exercises the actual
+    # ingest_repository_task wiring (catch SoftTimeLimitExceeded, run the
+    # recovery coroutine, re-raise so Celery still records the task as
+    # failed) rather than calling the recovery function directly. Same
+    # thread-executor technique as test_worker_survives_two_ingestion_tasks_in_a_row
+    # above, for the same reason - a real, connection-pooled engine, driven
+    # from a thread with no event loop of its own.
+    repository = await _make_repository(db_session)
+
+    async def _raise_soft_time_limit(repository_id):
+        raise SoftTimeLimitExceeded()
+
+    monkeypatch.setattr("app.tasks._run_ingestion", _raise_soft_time_limit)
+
+    task_engine = create_async_engine(TEST_DATABASE_URL)
+    task_session_factory = async_sessionmaker(task_engine, expire_on_commit=False)
+    monkeypatch.setattr("app.tasks.AsyncSessionLocal", task_session_factory)
+    monkeypatch.setattr("app.tasks.engine", task_engine)
+
+    from app.tasks import ingest_repository_task
+
+    loop = asyncio.get_running_loop()
+
+    with pytest.raises(SoftTimeLimitExceeded):
+        await loop.run_in_executor(None, ingest_repository_task, str(repository.id))
+
+    async with task_session_factory() as verify_session:
+        updated = await verify_session.get(Repository, repository.id)
+        assert updated.status == RepositoryStatus.FAILED
+        assert updated.error_message == (
+            "Ingestion exceeded the maximum allowed time and was stopped."
+        )
 
     await task_engine.dispose()

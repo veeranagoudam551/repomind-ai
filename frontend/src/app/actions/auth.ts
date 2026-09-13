@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { ApiError, loginUser, registerUser } from "@/lib/api";
+import { describeApiError, loginUser, registerUser } from "@/lib/api";
 import { createSession, deleteSession } from "@/lib/session";
 
 export type AuthFormState = { error: string } | undefined;
@@ -21,7 +21,7 @@ export async function login(
     const { access_token } = await loginUser({ email, password });
     await createSession(access_token);
   } catch (err) {
-    return { error: err instanceof ApiError ? err.message : "Something went wrong. Please try again." };
+    return { error: describeApiError(err) };
   }
 
   redirect("/dashboard");
@@ -47,7 +47,7 @@ export async function registerAndLogin(
     const { access_token } = await loginUser({ email, password });
     await createSession(access_token);
   } catch (err) {
-    return { error: err instanceof ApiError ? err.message : "Something went wrong. Please try again." };
+    return { error: describeApiError(err) };
   }
 
   redirect("/dashboard");

@@ -4,7 +4,13 @@ import { ArrowLeft, SearchIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ApiError, getRepository, searchRepository, type SearchResult } from "@/lib/api";
+import {
+  ApiError,
+  describeApiError,
+  getRepository,
+  searchRepository,
+  type SearchResult,
+} from "@/lib/api";
 import { deleteSession, getSessionToken } from "@/lib/session";
 
 export default async function RepositorySearchPage(props: PageProps<"/dashboard/[id]/search">) {
@@ -37,7 +43,7 @@ export default async function RepositorySearchPage(props: PageProps<"/dashboard/
     try {
       results = await searchRepository(token, id, query);
     } catch (err) {
-      searchError = err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
+      searchError = describeApiError(err);
     }
   }
 

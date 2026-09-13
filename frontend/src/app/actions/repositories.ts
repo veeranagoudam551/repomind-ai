@@ -2,7 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { ApiError, createRepository, deleteRepository, reindexRepository } from "@/lib/api";
+import {
+  createRepository,
+  deleteRepository,
+  describeApiError,
+  reindexRepository,
+} from "@/lib/api";
 import { getSessionToken } from "@/lib/session";
 
 export type RepositoryFormState = { error: string; successAt?: undefined } | { successAt: number; error?: undefined } | undefined;
@@ -24,7 +29,7 @@ export async function addRepository(
   try {
     await createRepository(token, githubUrl);
   } catch (err) {
-    return { error: err instanceof ApiError ? err.message : "Something went wrong. Please try again." };
+    return { error: describeApiError(err) };
   }
 
   revalidatePath("/dashboard");
@@ -53,7 +58,7 @@ export async function deleteRepositoryAndRedirect(id: string): Promise<void> {
     // which previously crashed the whole page (Day 41). The repository
     // still exists at this point, so staying on its page and showing why
     // is more useful than an opaque error boundary.
-    const message = err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
+    const message = describeApiError(err);
     revalidatePath(`/dashboard/${id}`);
     redirect(`/dashboard/${id}?deleteError=${encodeURIComponent(message)}`);
   }

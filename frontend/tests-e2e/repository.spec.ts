@@ -117,6 +117,14 @@ test.describe("repository management", () => {
     await page.getByRole("button", { name: "Add repository" }).click();
 
     await expect(page.getByText(/is not a valid GitHub repository URL/)).toBeVisible();
+    // Day 59: a real 400 from the real backend always carries an
+    // X-Request-ID header (app/core/request_id.py) - describeApiError
+    // (lib/api.ts) appends it to the message shown above as a
+    // "(reference: <id>)" suffix, so a user-reported error can be
+    // correlated with a specific backend log line. Proven end to end
+    // against the real API here rather than just unit-testing the
+    // formatting helper in isolation.
+    await expect(page.getByText(/\(reference: [\w-]+\)/)).toBeVisible();
   });
 
   test("unknown repository id shows the not-found page", async ({ page }) => {

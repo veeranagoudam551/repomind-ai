@@ -4,13 +4,40 @@
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
+// The backend (app/core/request_id.py) stamps this on every response, success
+// or failure, and includes it in every log line for that request - reading
+// it back here is what lets a user-reported error be correlated with a
+// specific backend log entry, without the frontend needing to know anything
+// about how the backend generates or stores it.
+const REQUEST_ID_HEADER = "X-Request-ID";
+
 export class ApiError extends Error {
   status: number;
+  requestId?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, requestId?: string) {
     super(message);
     this.status = status;
+    this.requestId = requestId;
   }
+}
+
+// Centralizes the "err instanceof ApiError ? err.message : <fallback>"
+// pattern already repeated across every page/action that renders an API
+// error - the one change here (Day 59) is appending the request-id
+// reference when one is actually available, everywhere that pattern
+// already exists, rather than duplicating this formatting in each call
+// site. Never renders anything beyond the backend's own `detail` message
+// plus this opaque id - no stack trace, no raw error object, nothing
+// infrastructure-specific.
+export function describeApiError(
+  err: unknown,
+  fallback = "Something went wrong. Please try again."
+): string {
+  if (!(err instanceof ApiError)) {
+    return fallback;
+  }
+  return err.requestId ? `${err.message} (reference: ${err.requestId})` : err.message;
 }
 
 async function extractErrorMessage(response: Response): Promise<string> {
@@ -36,7 +63,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new ApiError(response.status, await extractErrorMessage(response));
+    throw new ApiError(
+      response.status,
+      await extractErrorMessage(response),
+      response.headers.get(REQUEST_ID_HEADER) ?? undefined
+    );
   }
 
   if (response.status === 204) {

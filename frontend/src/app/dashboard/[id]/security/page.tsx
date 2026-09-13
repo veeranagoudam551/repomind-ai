@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ApiError,
+  describeApiError,
   getRepository,
   scanRepositorySecurity,
   type SecurityFinding,
@@ -50,7 +51,7 @@ export default async function RepositorySecurityPage(
     findings = result.findings;
     filesScanned = result.files_scanned;
   } catch (err) {
-    scanError = err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
+    scanError = describeApiError(err);
   }
 
   return (

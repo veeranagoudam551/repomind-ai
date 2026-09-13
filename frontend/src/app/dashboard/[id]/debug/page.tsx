@@ -4,7 +4,7 @@ import { ArrowLeft, Bug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ApiError, debugRepository, getRepository, type SearchResult } from "@/lib/api";
+import { ApiError, debugRepository, describeApiError, getRepository, type SearchResult } from "@/lib/api";
 import { deleteSession, getSessionToken } from "@/lib/session";
 
 export default async function RepositoryDebugPage(props: PageProps<"/dashboard/[id]/debug">) {
@@ -40,7 +40,7 @@ export default async function RepositoryDebugPage(props: PageProps<"/dashboard/[
       diagnosis = result.diagnosis;
       sources = result.sources;
     } catch (err) {
-      debugError = err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
+      debugError = describeApiError(err);
     }
   }
 

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { ApiError, createConversation, sendMessage } from "@/lib/api";
+import { createConversation, describeApiError, sendMessage } from "@/lib/api";
 import { getSessionToken } from "@/lib/session";
 
 export async function startConversation(repositoryId: string): Promise<void> {
@@ -42,7 +42,7 @@ export async function sendMessageAction(
     // embedding/LLM calls, so it's already saved even on failure here —
     // always revalidate below so that turn shows up rather than looking
     // like it silently vanished.
-    error = err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
+    error = describeApiError(err);
   }
 
   revalidatePath(`/dashboard/${repositoryId}/chat/${conversationId}`);

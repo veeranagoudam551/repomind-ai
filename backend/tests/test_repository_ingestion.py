@@ -13,6 +13,8 @@ against the test database.
 from __future__ import annotations
 
 import io
+import logging
+import re
 import tarfile
 import uuid
 
@@ -196,6 +198,101 @@ async def test_ingest_repository_embeds_chunks_and_sets_vector_id(db_session, mo
     point = upsert_calls[0][0]
     assert point["id"] == str(chunks[0].id)
     assert point["payload"]["repository_id"] == str(repository.id)
+
+
+async def test_ingest_repository_logs_start_and_duration_on_success(
+    db_session, monkeypatch, caplog
+):
+    # Day 59: proves a worker picking up the task is visible in logs even
+    # before anything else happens, and that the eventual success log
+    # records how long the whole run took - deterministic (any
+    # non-negative duration matches the pattern below), not a timing
+    # assertion on a specific value.
+    caplog.set_level(logging.INFO, logger="app.services.repository_ingestion")
+
+    repository = await _make_repository(db_session)
+    tarball = _make_tarball({"README.md": b"line one\nline two\n"})
+
+    async def _fake_download(owner, repo, ref):
+        return tarball
+
+    class _FakeEmbeddingProvider:
+        async def embed_texts(self, texts):
+            return [[0.0, 0.0] for _ in texts]
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.repository_ingestion._download_tarball", _fake_download)
+    monkeypatch.setattr(
+        "app.services.repository_ingestion.get_embedding_provider",
+        lambda: _FakeEmbeddingProvider(),
+    )
+    monkeypatch.setattr("app.services.repository_ingestion.vector_store.upsert_chunks", _noop)
+    monkeypatch.setattr(
+        "app.services.repository_ingestion.vector_store.delete_by_repository", _noop
+    )
+    monkeypatch.setattr(
+        "app.services.repository_ingestion.AsyncSessionLocal", lambda: db_session
+    )
+
+    await ingest_repository(repository.id)
+
+    start_records = [r for r in caplog.records if "starting for" in r.getMessage()]
+    assert len(start_records) == 1
+    assert str(repository.id) in start_records[0].getMessage()
+
+    success_records = [r for r in caplog.records if "embedded in" in r.getMessage()]
+    assert len(success_records) == 1
+    assert re.search(r"embedded in \d+\.\d+s", success_records[0].getMessage())
+
+
+async def test_ingest_repository_logs_start_and_duration_on_failure(
+    db_session, monkeypatch, caplog
+):
+    caplog.set_level(logging.INFO, logger="app.services.repository_ingestion")
+
+    repository = await _make_repository(db_session)
+    tarball = _make_tarball({"file.py": b"print('hi')\n"})
+
+    async def _fake_download(owner, repo, ref):
+        return tarball
+
+    async def _fake_delete(repository_id):
+        return None
+
+    async def _raise_embedding_error(texts):
+        raise RuntimeError("embedding provider unreachable")
+
+    class _RaisingEmbeddingProvider:
+        embed_texts = staticmethod(_raise_embedding_error)
+
+    monkeypatch.setattr("app.services.repository_ingestion._download_tarball", _fake_download)
+    monkeypatch.setattr(
+        "app.services.repository_ingestion.get_embedding_provider",
+        lambda: _RaisingEmbeddingProvider(),
+    )
+    monkeypatch.setattr(
+        "app.services.repository_ingestion.vector_store.delete_by_repository", _fake_delete
+    )
+    monkeypatch.setattr(
+        "app.services.repository_ingestion.AsyncSessionLocal", lambda: db_session
+    )
+
+    await ingest_repository(repository.id)
+
+    start_records = [r for r in caplog.records if "starting for" in r.getMessage()]
+    assert len(start_records) == 1
+
+    failure_records = [r for r in caplog.records if "ingest_repository failed for" in r.getMessage()]
+    assert len(failure_records) == 1
+    assert re.search(r"failed for .+ after \d+\.\d+s", failure_records[0].getMessage())
+
+    # No sensitive data (the fake exception's own message is a plain,
+    # non-secret string here) - this is the same log line that
+    # tests/test_secret_safety.py already checks more broadly across the
+    # whole app; this test only adds the duration-logging assertion.
+    assert "embedding provider unreachable" not in failure_records[0].getMessage()
 
 
 async def test_ingest_repository_skips_embedding_when_no_chunks(db_session, monkeypatch):

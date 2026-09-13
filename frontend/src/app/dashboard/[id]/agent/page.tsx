@@ -4,7 +4,7 @@ import { ArrowLeft, Bot, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { ApiError, getRepository, runRepositoryAgent, type AgentStep } from "@/lib/api";
+import { ApiError, describeApiError, getRepository, runRepositoryAgent, type AgentStep } from "@/lib/api";
 import { deleteSession, getSessionToken } from "@/lib/session";
 
 const MAX_STEPS_OPTIONS = [2, 4, 6, 8, 10];
@@ -45,7 +45,7 @@ export default async function RepositoryAgentPage(props: PageProps<"/dashboard/[
       answer = result.answer;
       steps = result.steps;
     } catch (err) {
-      agentError = err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
+      agentError = describeApiError(err);
     }
   }
 

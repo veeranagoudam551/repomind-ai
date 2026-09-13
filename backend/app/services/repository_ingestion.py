@@ -23,6 +23,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -223,6 +224,14 @@ def _scan_files(root_dir: str) -> list[dict]:
 
 
 async def ingest_repository(repository_id: uuid.UUID) -> None:
+    # Day 59: logged before anything else runs - the one piece of evidence
+    # that a worker actually picked this task up at all, as opposed to it
+    # still sitting queued in Redis or a worker never having started. Never
+    # includes repository content/prompts/credentials, only the id - same
+    # "no sensitive data in logs" standard as every other log line here.
+    logger.info("ingest_repository: starting for %s", repository_id)
+    started_at = time.perf_counter()
+
     async with AsyncSessionLocal() as db:
         repository = await db.get(Repository, repository_id)
         if repository is None:
@@ -313,11 +322,23 @@ async def ingest_repository(repository_id: uuid.UUID) -> None:
             repository.error_message = None
             await db.commit()
             logger.info(
-                "ingest_repository: %s scanned %d files, %d chunks, %d embedded",
+                "ingest_repository: %s scanned %d files, %d chunks, %d embedded in %.2fs",
                 repository_id, len(scanned_files), chunk_total, len(pending_chunks),
+                time.perf_counter() - started_at,
             )
         except Exception as exc:
-            logger.exception("ingest_repository failed for %s", repository_id)
+            # Celery's SoftTimeLimitExceeded (Day 59's bounded execution
+            # time in app/tasks.py) is a plain Exception subclass, so a
+            # timeout that happens to interrupt this function's own frame
+            # is already handled correctly right here, same as any other
+            # failure - no special-casing needed. app/tasks.py's own
+            # recovery path exists only for the case where the signal
+            # instead unwinds through asyncio's outer event-loop internals,
+            # bypassing this try/except entirely.
+            logger.exception(
+                "ingest_repository failed for %s after %.2fs",
+                repository_id, time.perf_counter() - started_at,
+            )
             await db.rollback()
             repository = await db.get(Repository, repository_id)
             if repository is not None:

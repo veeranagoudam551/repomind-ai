@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { analyzeRepositoryArchitecture, ApiError, getRepository } from "@/lib/api";
+import { analyzeRepositoryArchitecture, ApiError, describeApiError, getRepository } from "@/lib/api";
 import { deleteSession, getSessionToken } from "@/lib/session";
 
 export default async function RepositoryArchitecturePage(
@@ -37,8 +37,7 @@ export default async function RepositoryArchitecturePage(
     analysis = result.analysis;
     readmePath = result.readme_path;
   } catch (err) {
-    architectureError =
-      err instanceof ApiError ? err.message : "Something went wrong. Please try again.";
+    architectureError = describeApiError(err);
   }
 
   return (
