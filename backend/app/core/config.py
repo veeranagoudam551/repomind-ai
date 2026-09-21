@@ -40,9 +40,14 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_collection_name: str = "repomind_code_chunks"
+    # "anthropic" | "groq" - see app/services/llm.py. anthropic_api_key/
+    # anthropic_model are only read when this is "anthropic"; groq_api_key/
+    # groq_model only when this is "groq".
     llm_provider: str = "anthropic"
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"
+    groq_api_key: str = ""
+    groq_model: str = "openai/gpt-oss-120b"
     redis_url: str = "redis://localhost:6379/0"
 
     # Rate limiting (Day 46) - a Redis-backed fixed-window counter per
