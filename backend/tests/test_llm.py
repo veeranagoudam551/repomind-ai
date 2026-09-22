@@ -12,6 +12,7 @@ import pytest
 from app.services.llm import (
     LLMAPIError,
     LLMConfigError,
+    LLMRateLimitError,
     LLMToolChoiceViolationError,
     generate_response,
     generate_with_tools,
@@ -746,3 +747,152 @@ async def test_generate_with_tools_groq_empty_tools_list_omits_tools_and_tool_ch
 
     result = await generate_with_tools("system", [], [], 1024, tool_choice="none")
     assert result["content"] == "Done."
+
+
+# --- Provider HTTP 429 -> LLMRateLimitError (clean, user-safe message) ----
+
+
+async def test_generate_response_groq_429_raises_rate_limit_error_with_clean_message(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            429,
+            text='{"error":{"message":"Rate limit reached for model `openai/gpt-oss-120b`... '
+            '(Requested 17985, Used 7283)","type":"tokens","code":"rate_limit_exceeded"}}',
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMRateLimitError) as exc_info:
+        await generate_response("system", "hello")
+    message = str(exc_info.value)
+    # The raw upstream JSON/account numbers must never reach the message
+    # that ends up as the client-facing HTTPException detail.
+    assert "rate_limit_exceeded" not in message
+    assert "17985" not in message
+    assert "Requested" not in message
+    assert "temporarily rate-limited" in message.lower()
+
+
+async def test_generate_response_groq_429_is_still_an_llm_api_error(monkeypatch):
+    # Subclassing LLMAPIError means every existing `except LLMAPIError`
+    # in repositories.py/conversations.py already handles this correctly
+    # with zero endpoint-level code changes.
+    def handler(request):
+        return httpx.Response(429, text='{"error": {"message": "rate limited"}}')
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMAPIError):
+        await generate_response("system", "hello")
+
+
+async def test_generate_response_groq_429_respects_retry_after_header(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            429, headers={"retry-after": "12"}, text='{"error": {"message": "rate limited"}}'
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMRateLimitError) as exc_info:
+        await generate_response("system", "hello")
+    assert "12s" in str(exc_info.value)
+
+
+async def test_generate_response_groq_429_without_retry_after_uses_generic_message(monkeypatch):
+    def handler(request):
+        return httpx.Response(429, text='{"error": {"message": "rate limited"}}')
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMRateLimitError) as exc_info:
+        await generate_response("system", "hello")
+    assert str(exc_info.value) == (
+        "The AI service is temporarily rate-limited. Please wait a moment and try again."
+    )
+
+
+async def test_generate_with_tools_groq_429_raises_rate_limit_error(monkeypatch):
+    def handler(request):
+        return httpx.Response(429, text='{"error": {"message": "rate limited"}}')
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMRateLimitError):
+        await generate_with_tools("system", [], [_SEARCH_TOOL], 1024)
+
+
+async def test_generate_with_tools_anthropic_429_raises_rate_limit_error(monkeypatch):
+    def handler(request):
+        return httpx.Response(429, text='{"error": {"message": "rate limited"}}')
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "anthropic")
+    monkeypatch.setattr("app.services.llm.settings.anthropic_api_key", "sk-ant-test")
+
+    with pytest.raises(LLMRateLimitError):
+        await generate_with_tools("system", [], [_SEARCH_TOOL], 1024)
+
+
+async def test_generate_response_anthropic_429_raises_rate_limit_error(monkeypatch):
+    def handler(request):
+        return httpx.Response(429, text='{"type": "error", "error": {"message": "rate limited"}}')
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "anthropic")
+    monkeypatch.setattr("app.services.llm.settings.anthropic_api_key", "sk-ant-test")
+
+    with pytest.raises(LLMRateLimitError):
+        await generate_response("system", "hello")
+
+
+async def test_generate_with_tools_groq_400_unrelated_to_tool_choice_stays_plain_api_error(monkeypatch):
+    # A normal (non-tool-choice, non-rate-limit) 400 must NOT be
+    # reclassified as a rate limit or a tool-choice violation.
+    def handler(request):
+        return httpx.Response(400, text='{"error": {"message": "invalid request", "code": "invalid_request_error"}}')
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        await generate_with_tools("system", [], [_SEARCH_TOOL], 1024)
+    assert not isinstance(exc_info.value, LLMRateLimitError)
+    assert not isinstance(exc_info.value, LLMToolChoiceViolationError)
+
+
+async def test_generate_response_groq_500_stays_plain_api_error(monkeypatch):
+    def handler(request):
+        return httpx.Response(500, text="internal server error")
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        await generate_response("system", "hello")
+    assert not isinstance(exc_info.value, LLMRateLimitError)
+
+
+async def test_generate_response_groq_timeout_stays_plain_api_error(monkeypatch):
+    def handler(request):
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        await generate_response("system", "hello")
+    assert not isinstance(exc_info.value, LLMRateLimitError)

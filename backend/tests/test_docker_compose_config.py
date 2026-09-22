@@ -73,3 +73,21 @@ def test_api_healthcheck_probe_has_explicit_timeout():
     probe_code = test[-1]
 
     assert "timeout=3" in probe_code
+
+
+def test_backend_env_passes_through_llm_provider_config():
+    # Stabilization-phase fix: the api/celery-worker containers must see
+    # LLM_PROVIDER/GROQ_API_KEY/GROQ_MODEL from the host's .env, not just
+    # ANTHROPIC_API_KEY/OPENAI_API_KEY - without this, a `--profile full`
+    # deployment configured for LLM_PROVIDER=groq on the host would
+    # silently fall back to the unconfigured anthropic default inside the
+    # containers, and every LLM-backed endpoint would fail with
+    # LLMConfigError despite the host's own .env being correct.
+    compose = _load_compose()
+    backend_env = compose["services"]["api"]["environment"]
+    assert backend_env["LLM_PROVIDER"] == "${LLM_PROVIDER:-anthropic}"
+    assert backend_env["GROQ_API_KEY"] == "${GROQ_API_KEY}"
+    assert backend_env["GROQ_MODEL"] == "${GROQ_MODEL:-openai/gpt-oss-120b}"
+    # Shared anchor - celery-worker must get exactly the same values, not
+    # a second, potentially-drifted copy.
+    assert compose["services"]["celery-worker"]["environment"] == backend_env

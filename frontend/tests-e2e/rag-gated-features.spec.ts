@@ -20,6 +20,20 @@ import { seedRepository, seedRepositoryFiles, setRepositoryStatus } from "./seed
 // billing credits behind it, which instead surfaces as a real OpenAI 429
 // "insufficient_quota" error - so this matches either, rather than
 // assuming one specific account state.
+//
+// Environment note: these three tests assume EMBEDDING_PROVIDER=openai
+// (the backend's default) with no usable OPENAI_API_KEY - CI's workflow
+// never sets EMBEDDING_PROVIDER or OPENAI_API_KEY, so it always matches
+// this. If a developer's own local backend is intentionally running
+// EMBEDDING_PROVIDER=local (app/services/embedding_providers.py, no
+// OpenAI cost) for day-to-day development, these three tests will
+// correctly fail locally - local fastembed embeddings actually work, so
+// neither half of OPENAI_GAP_PATTERN ever appears. That's an expected
+// local-only divergence, not a bug in the app or in these tests: CI
+// remains the authoritative environment these assertions are written
+// against, and weakening the pattern to also accept a real answer would
+// stop it from ever catching a genuine regression in this graceful-
+// degradation path.
 const OPENAI_GAP_PATTERN = /OPENAI_API_KEY is not configured|insufficient_quota/;
 
 const PASSWORD = "TestPass123!";

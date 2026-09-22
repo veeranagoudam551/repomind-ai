@@ -44,7 +44,16 @@ current test/CI counts.
 
   The agent's tool set is exactly these six — it cannot call anything
   outside them — and every tool call is scoped to the same
-  repository/user the original request was authorized for.
+  repository/user the original request was authorized for. The planner
+  uses the LLM provider's **native tool-calling API** (Groq/OpenAI-style
+  `tools`/`tool_calls`, or Anthropic's `tool_use`/`tool_result` blocks) —
+  not a hand-rolled JSON-in-text convention — so tool selection is
+  structured and validated by the provider itself. Repository-derived
+  content fed back into the planner (tool results) is explicitly wrapped
+  as untrusted data, never as an instruction, and per-run duplicate code
+  chunks are suppressed so an investigation doesn't resend the same
+  snippet twice. See "LLM Providers" below for which provider actually
+  answers these calls and its current, honestly-documented limitations.
 
 ## Demo / Screenshots
 
@@ -74,8 +83,8 @@ Semantic Retrieval          (cosine similarity, scoped to one repository)
         ↓
 RAG / AI Tools              (chat, search, debug, explain, review,
         ↓                    architecture, security-scan)
-Claude / LangGraph Agent    (grounded answer, or up to max_steps tool
-        ↓                    calls before one)
+Groq or Anthropic /          (grounded answer, or up to max_steps native
+LangGraph Agent      ↓       tool calls before one)
 Developer Answer
 ```
 
@@ -95,7 +104,7 @@ from ingestion.
 | Backend | Python, FastAPI, Pydantic, SQLAlchemy |
 | Relational DB | PostgreSQL |
 | Vector DB | Qdrant |
-| AI / RAG | Anthropic Claude (chat, explain/review/debug/architecture, agent reasoning); OpenAI embeddings (default) or local fastembed/`all-MiniLM-L6-v2` (optional — one provider active at a time, never both simultaneously); LangGraph (multi-step agent orchestration) |
+| AI / RAG | Groq or Anthropic Claude (chat, explain/review/debug/architecture, agent reasoning — one provider active at a time via `LLM_PROVIDER`, see "LLM Providers" below); OpenAI embeddings (default) or local fastembed/`all-MiniLM-L6-v2` (optional — one embedding provider active at a time, never both simultaneously); LangGraph (multi-step agent orchestration, native tool calling) |
 | Background jobs | Redis + Celery |
 | Infra | Docker, Docker Compose |
 
@@ -127,9 +136,11 @@ that share one interface (`app/services/embedding_providers.py`):
 repository ingestion (Celery worker, writing to Qdrant) and every
 search/chat/debug request (FastAPI, embedding the query to search
 Qdrant) — see "Embedding Providers" below for the OpenAI vs. local
-choice. LLM calls (Anthropic Claude, via LangGraph for the multi-step
-agent) happen only in FastAPI request handlers that need one: chat,
-explain, review, architecture, security-scan, and the agent — never
+choice. LLM calls (Groq or Anthropic, selected by `LLM_PROVIDER` — see
+"LLM Providers" below — via LangGraph's native tool calling for the
+multi-step agent) happen only in FastAPI request handlers that need
+one: chat, explain, review, architecture, security-scan, and the
+agent — never
 during ingestion itself. See [docs/architecture.md](docs/architecture.md)
 for the full system design, including the data model and RAG pipeline
 in more detail, and "Production Deployment → Architecture" below for
@@ -483,6 +494,94 @@ Practical effect: a repository ingested under one provider has to be
 does this automatically, since re-embedding an entire repository isn't
 free and shouldn't happen as a side effect of an env var change.
 
+### LLM Providers
+
+Which model answers chat/explain/review/debug/architecture requests and
+drives the agent's planning is configurable (`LLM_PROVIDER` in `.env`),
+behind one interface (`app/services/llm.py`: `generate_response()` for a
+single grounded answer, `generate_with_tools()` for the agent's native
+tool-calling planner) that every caller goes through instead of a
+specific provider directly — the same pattern `embedding_providers.py`
+already established for embeddings.
+
+**`LLM_PROVIDER=groq`**:
+- Uses Groq's OpenAI-compatible Chat Completions API. Requires
+  `GROQ_API_KEY`; model is `GROQ_MODEL` (default `openai/gpt-oss-120b`).
+- The agent's planner uses Groq's **native tool-calling** support
+  (`tools`/`tool_calls`) — not a hand-written JSON convention the model
+  is merely asked to follow.
+- **Known limitation, documented honestly**: this project's Groq account
+  tier currently has an 8,000 tokens-per-minute (TPM) ceiling for
+  `openai/gpt-oss-120b`. A multi-step agent investigation can hit that
+  limit mid-run — live testing during development found this to be
+  driven primarily by *account-level* TPM availability (which fluctuates
+  independently of any single request's own size, confirmed by two
+  back-to-back identical requests reporting very different "requested
+  token" figures from Groq) rather than a fixed, predictable ceiling
+  this codebase alone controls. `SEARCH_LIMIT`, per-run duplicate-chunk
+  suppression, and a reduced planner token budget (see "Agent
+  Safeguards" below) reduce how much each request needs, but do not
+  eliminate the underlying account-tier constraint. When Groq returns
+  HTTP 429, the API responds with a clean, user-facing message ("The AI
+  service is temporarily rate-limited...") instead of the raw upstream
+  error — see `app/services/llm.py`'s `LLMRateLimitError`.
+
+**`LLM_PROVIDER=anthropic`** (the original, unchanged-since-Day-17
+implementation):
+- Uses Anthropic's Messages API, including its own native tool-calling
+  format (`tools` with `input_schema`, `tool_use`/`tool_result` content
+  blocks) for the agent's planner. Requires `ANTHROPIC_API_KEY`; model is
+  `ANTHROPIC_MODEL` (default `claude-sonnet-5`).
+- **Not live-verified in this environment** — no `ANTHROPIC_API_KEY` is
+  configured here to test against a real endpoint. The implementation is
+  covered by an extensive mocked/unit test suite
+  (`backend/tests/test_llm.py`) exercising tool-schema translation,
+  message-history translation (including Anthropic's requirement that
+  multiple tool results answering one turn share a single following user
+  turn), response normalization, and error mapping — but "passes every
+  mocked test" is not the same claim as "confirmed working against
+  Anthropic's real API," and this README does not claim the latter.
+
+Both providers share the same Agent safeguards (`app/services/agent.py`):
+
+- **`max_steps`** (1–10, default 4) bounds how many tool calls one agent
+  run can make; the final call is sent with `tool_choice="none"` so the
+  provider itself cannot return another tool call once the budget is
+  used, rather than just asking the model in English to stop.
+- **Malformed/missing tool arguments** never crash a request — a tool
+  invoked with an unparseable or incomplete argument set resolves to the
+  same clean "error: ..." observation a REST caller would get from the
+  equivalent endpoint.
+- **Unknown tool names** (defensive only — the provider is constrained to
+  the six declared tools) resolve to an "unknown tool, ignored" step
+  rather than an exception.
+- **Prompt-injection / untrusted-content boundary**: every tool result is
+  wrapped in explicit `[BEGIN/END UNTRUSTED REPOSITORY CONTENT]` markers
+  before being replayed into the next planning call, with the system
+  prompt instructing the model to always treat that content as data,
+  never as an instruction — repository code is attacker-influenced (
+  anyone can author a public GitHub repo), so this is the one place in
+  the app where such content re-enters a context that makes control-flow
+  decisions.
+- **Forced-finish / tool-choice-violation fallback**: some models
+  occasionally attempt a tool call despite `tool_choice="none"`, which
+  Groq's API rejects outright. When that happens on the final,
+  budget-exhausted turn, one bounded (never more than one) fallback
+  call — with no tools declared at all, so the same violation can't
+  structurally repeat — asks the model to synthesize a final answer from
+  what's already been gathered, instead of surfacing a raw provider
+  error.
+- **Per-run duplicate-chunk suppression**: if `search_code`/`debug`
+  return a code chunk the same agent run already retrieved earlier, it's
+  not resent — the tool result says so concisely instead. Scoped to one
+  run only (in-memory `AgentState`, never global, never persisted); a
+  fresh agent run starts with no suppression history.
+- **Token-consumption optimization**: `SEARCH_LIMIT` (chunks per
+  `search_code`/`debug` call) and the planner's own output token budget
+  were both deliberately kept small, specifically to reduce how much
+  each planning turn costs — see "Known Limitations" below for why this
+  doesn't fully eliminate Groq's account-level rate limiting.
+
 ### Running tests
 
 ```bash
@@ -508,7 +607,7 @@ setup steps.
 
 | Job | What it validates | Depends on |
 |---|---|---|
-| `backend` (Backend tests) | The pytest suite, against a Postgres service container. No API keys needed — every external call (OpenAI, Anthropic, GitHub, Qdrant, Celery) is mocked per-test, same as running it locally. | — |
+| `backend` (Backend tests) | The pytest suite, against a Postgres service container. No API keys needed — every external call (OpenAI, Anthropic, Groq, GitHub, Qdrant, Celery) is mocked per-test, same as running it locally. | — |
 | `frontend` (Frontend typecheck & lint) | `next typegen`, `tsc --noEmit`, `eslint .` | — |
 | `e2e` (End-to-end tests) | The full Playwright suite against real Postgres, Redis, and Qdrant service containers plus a real Celery worker, all on the runner. `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` are deliberately left unset — the suite asserts the graceful inline error both produce when missing — so it needs no paid API access to pass. `GITHUB_TOKEN` is the workflow's own automatic token, raising the unauthenticated GitHub API rate limit; no repo secret is configured. | `backend`, `frontend` |
 | `docker` (Docker build validation) | Builds the real `backend/Dockerfile` (both the `production` and `with-local-embedding` targets) and `frontend/Dockerfile` images with `docker/build-push-action`, and validates `docker compose -f docker/docker-compose.yml --profile full config`. Images are never pushed anywhere. | — |
@@ -521,23 +620,28 @@ plus a container startup, for something that was never going to pass.
 On failure, `e2e` and `docker-smoke` each upload their own Playwright
 HTML report as a build artifact.
 
-**Verification snapshot — commit `3736f40`, CI Run #20 (a point-in-time
-count, not re-verified on every future commit; it will grow if the
-project is developed further):**
+**Verification snapshot — commit `893fc1d` (a point-in-time count, not
+re-verified on every future commit; it will grow if the project is
+developed further):**
 
-- 259 backend `pytest` tests (`backend/tests/`)
-- 19 Playwright end-to-end tests across 5 spec files (`frontend/tests-e2e/`)
-- 5 GitHub Actions CI jobs — `backend`, `frontend`, `e2e`, `docker`,
-  `docker-smoke` — all passing
-- The full Docker Compose stack (`docker-smoke`) starts and passes its
-  healthcheck-gated `--wait`, including the API's `/health/ready` check
-- A production-like browser test (register → add repository → view
-  detail page → log out → confirm the protected dashboard redirects)
-  passes against that real containerized stack, not a mock
+- 324 backend `pytest` tests (`backend/tests/`), locally verified
+  passing in this environment.
+- 19 Playwright end-to-end tests across 5 spec files
+  (`frontend/tests-e2e/`) — `file-scoped-ai-features.spec.ts` fully
+  passes locally; `rag-gated-features.spec.ts` has 3 tests that only
+  fail locally when `EMBEDDING_PROVIDER=local` is intentionally
+  configured (see that file's own comment, and "Known Limitations"
+  below) — CI itself is unaffected, since its workflow never sets
+  `EMBEDDING_PROVIDER`.
+- **CI job status for this exact commit was not independently
+  re-verified from this environment** (no `gh` CLI access here) — check
+  the CI badge at the top of this README for the authoritative, current
+  state. An earlier commit on this line of work (`be15654`) was
+  previously confirmed green across all 5 jobs via GitHub's own UI.
 
 These are two genuinely different test suites, not one count split two
-ways — the 259 backend tests never touch a browser, and the 19 E2E
-tests never run against the backend's mocked external services.
+ways — the backend tests never touch a browser, and the E2E tests never
+run against the backend's mocked external services.
 
 ## Production Deployment
 
@@ -610,7 +714,9 @@ At a glance (Day 52):
 - **Conditionally required secrets** (needed only for the feature that
   uses them; each fails with a clean `503`, never a crash, if missing):
   `OPENAI_API_KEY` (only when `EMBEDDING_PROVIDER=openai`),
-  `ANTHROPIC_API_KEY` (only when an LLM-backed endpoint actually runs).
+  `ANTHROPIC_API_KEY` (only when `LLM_PROVIDER=anthropic`, the code
+  default), `GROQ_API_KEY` (only when `LLM_PROVIDER=groq` — see "LLM
+  Providers" above).
 - **Optional**: `GITHUB_TOKEN` (raises a rate limit, nothing breaks
   without it), all `RATE_LIMIT_*` variables, `WEB_CONCURRENCY`/
   `FORWARDED_ALLOW_IPS`.
@@ -631,9 +737,10 @@ same file: **when** each value is read matters as much as what it's for.
 | `DATABASE_URL` | Runtime | **Yes, real value** — app refuses to start with the placeholder `changeme` password |
 | `CORS_ORIGINS` | Runtime | Recommended — logs a warning (not a hard failure) if left at the localhost default |
 | `GITHUB_TOKEN` | Runtime | Optional — raises GitHub's rate limit from 60/hr to 5000/hr |
-| `LLM_PROVIDER` / `ANTHROPIC_MODEL` / `EMBEDDING_MODEL` | Runtime | Optional (defaults are usable) |
+| `LLM_PROVIDER` / `ANTHROPIC_MODEL` / `GROQ_MODEL` / `EMBEDDING_MODEL` | Runtime | Optional (defaults are usable) |
 | `OPENAI_API_KEY` | Runtime | Yes, for search/chat/debug/etc. to work at all — endpoints return a clean `503` (not a crash) if unset |
-| `ANTHROPIC_API_KEY` | Runtime | Yes, same reasoning as `OPENAI_API_KEY` |
+| `ANTHROPIC_API_KEY` | Runtime | Yes, only when `LLM_PROVIDER=anthropic` — same clean-`503`-if-unset reasoning as `OPENAI_API_KEY` |
+| `GROQ_API_KEY` | Runtime | Yes, only when `LLM_PROVIDER=groq` — same reasoning |
 | `REDIS_URL` | Runtime | Yes — Celery broker and Day 46's rate limiting both need it; rate limiting fails open (not closed) if unreachable |
 | `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_COLLECTION_NAME` | Runtime | Yes — search/chat/debug depend on it; see the Qdrant note below |
 | `RATE_LIMIT_*` (ten variables) | Runtime | Optional (defaults are usable); `RATE_LIMIT_ENABLED=false` disables all of them |
@@ -977,51 +1084,86 @@ or has hit, not a generic checklist:
 | Redis unavailable | `POST /repositories`/`.../reindex` fail fast into `status: "failed"` with a clear "background worker is unreachable" message rather than hanging (Day 38). Rate limiting fails **open** (requests allowed through), not closed, if Redis is unreachable — it won't block traffic, but limits stop being enforced. |
 | Qdrant unavailable | No healthcheck on the `qdrant` service by design — its image has no shell tools to probe with. Check manually: `curl http://localhost:6333/collections`. Search/chat/debug map an unreachable Qdrant to a clean `502`/`503`, not a crash. |
 | Ingestion ends in `failed` — OpenAI missing/quota | Expected without a real `OPENAI_API_KEY` (or with one that's exhausted) when `EMBEDDING_PROVIDER=openai` — the repository's `error_message` names it directly. Either set a real key, or switch to `EMBEDDING_PROVIDER=local` (see "Embedding Providers") to avoid needing one at all. |
-| Chat/explain/review/etc. return `503` | `ANTHROPIC_API_KEY` is unset or invalid — every LLM-backed endpoint returns a clean `503` rather than crashing when it's missing. |
+| Chat/explain/review/etc. return `503` | Whichever key `LLM_PROVIDER` currently selects (`ANTHROPIC_API_KEY` for `anthropic`, `GROQ_API_KEY` for `groq`) is unset or invalid — every LLM-backed endpoint returns a clean `503` rather than crashing when it's missing. |
+| Agent request returns `502` with "temporarily rate-limited" | The configured LLM provider returned an HTTP 429 (Groq's shared account-tier TPM limit is the one observed in practice — see "LLM Providers" above). The API translates this into a clean message rather than the raw provider error; wait a few seconds and retry manually — the app does not auto-retry. |
 | Repository stuck in `pending` forever | No Celery worker is running. `.delay()` calls succeed either way (they just publish to Redis) — start one: `celery -A app.core.celery_app worker --loglevel=info` (add `--pool=solo` on native Windows; see "Backend" above). |
 | Port already in use (3000/8000/5432/6379/6333) | Something else on the host is already bound to it. For Compose, override via `.env` (`BACKEND_PORT`, `POSTGRES_PORT`, `REDIS_PORT`, `QDRANT_PORT`); for native processes, pass the equivalent flag/env var to that tool directly. |
 | Docker isn't available on this machine | Not a hard requirement — use Option B (native/WSL Postgres/Redis/Qdrant) from "Local infrastructure" above; every other piece of the stack already runs the same way regardless of Docker. |
 | Setting up local embeddings (`EMBEDDING_PROVIDER=local`) | Native/WSL: `pip install -r backend/requirements-local-embedding.txt` instead of `requirements.txt`. Docker: set `BACKEND_DOCKER_TARGET=with-local-embedding` in `.env` before `--build`ing. See "Embedding Providers" above for the full explanation — including that switching providers is not retroactive for already-ingested repositories. |
 
+## Known Limitations
+
+Documented honestly, not glossed over:
+
+- **Groq's account-tier TPM limit can interrupt a multi-step agent run.**
+  The `openai/gpt-oss-120b` model currently used is subject to an 8,000
+  tokens-per-minute ceiling on this project's Groq account tier. A
+  longer agent investigation (several real tool calls in one run) can
+  hit that limit before producing a final answer. This is not guaranteed
+  to happen on every run, and the app never shows a raw provider error
+  when it does (see "LLM Providers" above) — but **reliable, every-time
+  Agent completion is not currently guaranteed**, and this README makes
+  no claim that it is.
+- **Anthropic's native tool-calling path has not been live-verified.**
+  It's implemented and covered by an extensive mocked/unit test suite,
+  but no `ANTHROPIC_API_KEY` has been available in this project's own
+  environment to confirm it against Anthropic's real API. Switching
+  `LLM_PROVIDER=anthropic` in a real deployment should work per the test
+  coverage, but that is a claim about test coverage, not about a
+  confirmed live run.
+- **This is not a public or production deployment.** Everything in
+  "Production Deployment" below describes a deployment *path* —
+  Dockerfiles, a Compose profile, environment-variable contracts,
+  healthchecks — verified in CI's own disposable runner. It does not
+  mean this application is currently deployed anywhere publicly
+  reachable, or that doing so has been fully audited end-to-end (see
+  the deployment-readiness notes in "Production Deployment" for what
+  specifically would still need attention before a real internet-facing
+  deployment — a reverse proxy/TLS layer in front of the stack, and
+  restricting which container ports are host-published, in particular).
+- **Not free forever, and not guaranteed rate-limit-free.** Groq's free
+  tier and local fastembed embeddings avoid *some* costs (no OpenAI
+  embedding spend, no Anthropic spend while `LLM_PROVIDER=groq`), but
+  "avoids some costs today" is not the same claim as "will always be
+  free" or "will never be rate-limited" — see the TPM point above.
+
 ## Project Status
 
-RepoMind AI is **implementation-complete**: every feature under "Key
-Features" above — RAG chat, semantic search, AI debugging/review/explain,
-architecture analysis, security scanning, and the LangGraph agent — is
-implemented, tested, and passing in CI. The CI badge at the top of this
-README always reflects the live state of the latest commit on `main`;
-what follows is a dated snapshot, not a claim that nothing will ever
-change again.
+RepoMind AI is **feature-complete**: every feature under "Key Features"
+above — RAG chat, semantic search, AI debugging/review/explain,
+architecture analysis, security scanning, and the LangGraph agent with
+native tool calling — is implemented and covered by the automated test
+suite. The CI badge at the top of this README always reflects the live
+state of the latest commit on `main`; what follows is a dated snapshot,
+not a claim that nothing will ever change again, and not a claim that
+every listed capability is guaranteed to behave identically on every
+run (see "Known Limitations" immediately above, specifically regarding
+the Agent and Groq).
 
-As of commit `3736f40` (Day 60, GitHub Actions Run #20), the CI pipeline
-described in "Testing & Continuous Integration" above is fully green
-end to end, across all 5 jobs:
+**As of commit `893fc1d`** (native Groq/Anthropic tool calling, agent
+token-consumption optimization, and graceful upstream-rate-limit
+handling), locally verified in this environment:
 
-- Backend pytest suite, frontend typecheck/lint, and the full Playwright
-  e2e suite all pass.
-- Both backend Docker image targets (`production` and
-  `with-local-embedding`) and the frontend Docker image build
-  successfully in GitHub Actions, and `docker compose ... config`
-  validates cleanly.
-- The complete `--profile full` Docker Compose stack (Postgres, Redis,
-  Qdrant, API, Celery worker, frontend) starts and every service with a
-  healthcheck reports healthy, purely from CI's own `--wait` gate —
-  no fixed sleep. The `api` container's own healthcheck uses
-  `/health/ready` (Day 60), so this also proves the database was
-  actually reachable, not just that the process was alive.
-- `/health` and `/health/ready` both pass via `scripts/smoke_check.py`
-  against the running containers.
-- A real Chromium browser, driven by Playwright, successfully
-  registers a user, adds a repository, views its detail page, logs
-  out, and confirms the protected dashboard redirects to `/login` —
-  all against the actual containerized frontend/API/Postgres/Redis,
-  not a mock.
-- The stack is torn down cleanly (`down -v`) afterward every time.
+- **324 backend `pytest` tests**, all passing.
+- Frontend `npm run lint` and `npm run build` (typecheck included) both
+  pass.
+- The Playwright e2e suite's `file-scoped-ai-features.spec.ts` (explain,
+  review, architecture, security, agent) passes in full locally. Three
+  tests in `rag-gated-features.spec.ts` (chat/search/debug) fail
+  *locally only*, and only when the local backend is intentionally
+  configured with `EMBEDDING_PROVIDER=local` instead of the CI/default
+  `openai` — see that spec file's own comment for the full explanation;
+  this is a documented local-environment difference, not a code defect.
 
-This full verification happens in **GitHub Actions**, not on this
-project's own development machine — Docker itself isn't installed
-there (see "Native/WSL fallback" above for why), so nothing in this
-README claims the Docker Compose stack was run or tested locally.
+**GitHub Actions CI status for the exact current commit has not been
+independently re-verified from this environment** — the `gh` CLI isn't
+available here, so this README does not claim a fresh, tool-verified CI
+result for every commit going forward. The CI badge at the top of this
+page is the authoritative, always-current source for that; check it
+directly rather than trusting a snapshot here. An earlier commit on this
+same line of work (`be15654`) was confirmed green across all 5 jobs —
+backend tests, frontend typecheck/lint, Docker build validation, e2e,
+and the Docker Compose full-stack smoke test — via GitHub's own UI.
 Day-to-day development and the commands throughout this README are
 verified the native/WSL way instead. Should development continue, this
 snapshot will be extended rather than replaced — check the CI badge for

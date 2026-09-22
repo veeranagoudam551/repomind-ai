@@ -18,6 +18,19 @@ import { seedRepository, seedRepositoryFiles } from "./seed";
 // outcome every prior day's manual verification found. security_scan is
 // the exception: it calls no external API at all, so its test asserts a
 // real, deterministic result instead - same as Day 31's live check.
+//
+// Environment note (added during the Groq stabilization work): these
+// assertions assume LLM_PROVIDER=anthropic (the code default) with no
+// usable ANTHROPIC_API_KEY - CI's workflow never sets LLM_PROVIDER or
+// either provider's key, so it always matches this. If a developer's own
+// local backend is intentionally running LLM_PROVIDER=groq with a real,
+// working GROQ_API_KEY (this project's own local dev setup during Agent
+// stabilization work), these four tests will correctly fail locally -
+// Groq actually answers, so "ANTHROPIC_API_KEY is not configured" never
+// appears. That's an expected local-only divergence, not a bug: CI
+// remains the authoritative environment these assertions are written
+// against, same reasoning as rag-gated-features.spec.ts's own note for
+// EMBEDDING_PROVIDER.
 
 const PASSWORD = "TestPass123!";
 

@@ -88,6 +88,43 @@ class LLMToolChoiceViolationError(LLMAPIError):
     pass
 
 
+class LLMRateLimitError(LLMAPIError):
+    """Raised specifically for a provider HTTP 429 (Groq or Anthropic),
+    with an already-safe-to-show-the-user message instead of the raw
+    upstream response body a generic LLMAPIError carries. Subclasses
+    LLMAPIError so it needs no new handling anywhere - every existing
+    `except LLMAPIError as exc: raise HTTPException(..., detail=str(exc))`
+    across repositories.py/conversations.py already turns whatever
+    message this exception carries into the client-facing `detail`, so
+    fixing the message here is enough; no endpoint or agent.py code needs
+    to change. Deliberately still maps to the existing 502
+    (_LLM_UPSTREAM_ERROR) status, not 429 - this API already documents
+    429 as *RepoMind's own* per-user rate limit (per_user_rate_limit,
+    Day 46); reusing it for "the upstream provider is rate-limited" would
+    make an existing, already-documented status code ambiguous.
+    """
+
+    pass
+
+
+_RATE_LIMIT_MESSAGE = "The AI service is temporarily rate-limited. Please wait a moment and try again."
+
+
+def _rate_limit_message(response: httpx.Response) -> str:
+    # Respects a standard Retry-After header when the provider actually
+    # sends one, without assuming any specific provider always does -
+    # safe/defensive, not a guess at Groq-specific header names that
+    # weren't independently confirmed present on a real 429 response.
+    retry_after = response.headers.get("retry-after")
+    if retry_after:
+        try:
+            seconds = float(retry_after)
+            return f"The AI service is temporarily rate-limited. Please try again in about {seconds:.0f}s."
+        except ValueError:
+            pass
+    return _RATE_LIMIT_MESSAGE
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     async def generate(self, system_prompt: str, user_message: str, max_tokens: int) -> str:
@@ -133,6 +170,8 @@ class AnthropicLLMProvider:
         except httpx.RequestError as exc:
             raise LLMAPIError(f"Could not reach Anthropic: {exc}") from exc
 
+        if response.status_code == 429:
+            raise LLMRateLimitError(_rate_limit_message(response))
         if response.status_code != 200:
             raise LLMAPIError(
                 f"Anthropic API returned {response.status_code}: {response.text}"
@@ -233,6 +272,8 @@ class AnthropicLLMProvider:
         except httpx.RequestError as exc:
             raise LLMAPIError(f"Could not reach Anthropic: {exc}") from exc
 
+        if response.status_code == 429:
+            raise LLMRateLimitError(_rate_limit_message(response))
         if response.status_code != 200:
             raise LLMAPIError(
                 f"Anthropic API returned {response.status_code}: {response.text}"
@@ -292,6 +333,8 @@ class GroqLLMProvider:
         except httpx.RequestError as exc:
             raise LLMAPIError(f"Could not reach Groq: {exc}") from exc
 
+        if response.status_code == 429:
+            raise LLMRateLimitError(_rate_limit_message(response))
         if response.status_code != 200:
             raise LLMAPIError(f"Groq API returned {response.status_code}: {response.text}")
 
@@ -371,6 +414,8 @@ class GroqLLMProvider:
         except httpx.RequestError as exc:
             raise LLMAPIError(f"Could not reach Groq: {exc}") from exc
 
+        if response.status_code == 429:
+            raise LLMRateLimitError(_rate_limit_message(response))
         if response.status_code != 200:
             if response.status_code == 400:
                 try:

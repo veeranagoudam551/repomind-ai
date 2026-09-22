@@ -56,7 +56,14 @@ x-backend-env: &backend-env
   QDRANT_HOST: qdrant
   QDRANT_PORT: 6333
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-  # No fallback for these four - real secrets, not local-dev conveniences.
+  # LLM_PROVIDER/GROQ_MODEL have safe defaults, same as ENVIRONMENT/
+  # CORS_ORIGINS above - app/core/config.py's own class defaults
+  # ("anthropic" / "openai/gpt-oss-120b"), so a container never silently
+  # falls back to something different than what the app itself would
+  # default to unconfigured.
+  LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+  GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+  # No fallback for these five - real secrets, not local-dev conveniences.
   # An unset JWT_SECRET_KEY resolves to an empty string here (Compose's
   # ${VAR} with no :-default), which app/core/config.py's startup guard
   # (Day 47) refuses to run with once ENVIRONMENT=production.
@@ -64,6 +71,7 @@ x-backend-env: &backend-env
   GITHUB_TOKEN: ${GITHUB_TOKEN}
   OPENAI_API_KEY: ${OPENAI_API_KEY}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+  GROQ_API_KEY: ${GROQ_API_KEY}
 
 services:
   postgres:

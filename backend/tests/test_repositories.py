@@ -9,7 +9,7 @@ from app.models.repository_file import RepositoryFile
 from app.services.agent import PLANNER_MAX_TOKENS
 from app.services.embeddings import EmbeddingConfigError
 from app.services.github import GitHubAPIError, GitHubRepoNotFound
-from app.services.llm import LLMAPIError, LLMConfigError, LLMToolChoiceViolationError
+from app.services.llm import LLMAPIError, LLMConfigError, LLMRateLimitError, LLMToolChoiceViolationError
 from tests.conftest import register_and_login
 from tests.factories import make_repo_info
 
@@ -2053,6 +2053,81 @@ async def test_agent_maps_llm_api_error_to_502(client, db_session, monkeypatch):
         f"/repositories/{repo_id}/agent", json={"goal": "anything"}, headers=headers
     )
     assert response.status_code == 502
+
+
+async def test_agent_groq_429_returns_graceful_response_not_raw_provider_text(
+    client, db_session, monkeypatch
+):
+    # Phase 2: a user must never see the raw Groq 429 body (account
+    # numbers, "rate_limit_exceeded" code, etc.) - the endpoint's existing
+    # `except LLMAPIError as exc: raise HTTPException(502, detail=str(exc))`
+    # is untouched; the fix lives entirely in llm.py's exception message.
+    headers = await register_and_login(client, "agent31@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    calls = {"count": 0}
+
+    async def _fake_generate_with_tools(system_prompt, messages, tools, max_tokens=1024, tool_choice="auto"):
+        calls["count"] += 1
+        raise LLMRateLimitError(
+            "The AI service is temporarily rate-limited. Please wait a moment and try again."
+        )
+
+    monkeypatch.setattr("app.services.agent.generate_with_tools", _fake_generate_with_tools)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent", json={"goal": "anything"}, headers=headers
+    )
+    # Same status as any other upstream LLM failure - existing API
+    # contract preserved, no new/ambiguous status code introduced (429 is
+    # already RepoMind's own per-user AI rate limit on this same endpoint).
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail == "The AI service is temporarily rate-limited. Please wait a moment and try again."
+    assert "rate_limit_exceeded" not in detail
+    assert "Groq API returned" not in detail
+    # No retry loop introduced - plan_node makes exactly one call before
+    # the exception propagates straight to the endpoint.
+    assert calls["count"] == 1
+    # Request-ID/logging correlation is untouched - the existing
+    # RequestIDMiddleware still stamps every response, including this one.
+    assert "X-Request-ID" in response.headers
+
+
+async def test_agent_groq_429_on_forced_finish_still_gets_graceful_response(
+    client, db_session, monkeypatch
+):
+    # A 429 on the forced-finish turn (tool_choice="none") is a different
+    # exception type (LLMRateLimitError, not LLMToolChoiceViolationError),
+    # so plan_node's tool-choice-violation fallback must NOT swallow it -
+    # it propagates to the same graceful 502 as any other turn.
+    headers = await register_and_login(client, "agent32@example.com")
+    repo_id, _chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    calls = {"count": 0}
+
+    async def _fake_generate_with_tools(system_prompt, messages, tools, max_tokens=1024, tool_choice="auto"):
+        calls["count"] += 1
+        if tool_choice == "auto":
+            return _calls([_tool_call("call_1", "security_scan", {})])
+        raise LLMRateLimitError(
+            "The AI service is temporarily rate-limited. Please wait a moment and try again."
+        )
+
+    monkeypatch.setattr("app.services.agent.generate_with_tools", _fake_generate_with_tools)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent",
+        json={"goal": "anything", "max_steps": 1},
+        headers=headers,
+    )
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail == "The AI service is temporarily rate-limited. Please wait a moment and try again."
+    # 2 calls total: the one real tool-taking turn, then the forced-finish
+    # turn that hit the rate limit - no extra fallback attempt, since a
+    # rate limit is not a tool-choice violation.
+    assert calls["count"] == 2
 
 
 async def test_agent_rejects_empty_goal(client, db_session, monkeypatch):
