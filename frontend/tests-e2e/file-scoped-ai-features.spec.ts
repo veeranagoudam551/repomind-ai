@@ -74,7 +74,20 @@ test.describe("file-scoped AI features (explain, review, architecture, security,
     await page.goto(`/dashboard/${repoId}`);
     await page.getByRole("link", { name: "Review", exact: true }).click();
 
-    await expect(page.getByText("Review file", { exact: true })).toBeVisible();
+    // Scoped to the CardTitle's own [data-slot="card-title"], exact-text
+    // filtered, rather than a bare getByText(..., {exact:true}): the page
+    // legitimately has two "Review file" text nodes now (this heading and
+    // the explicit-run button below), so a plain exact-text locator is
+    // ambiguous (Playwright strict-mode violation). CardTitle renders a
+    // plain <div>, not a semantic heading element, so getByRole("heading",
+    // ...) can't match it either. [data-slot="card-title"] alone isn't
+    // unique either - the surrounding dashboard layout renders its own
+    // CardTitles (repository name, "Files (1)") - so the exact-text
+    // filter is what actually narrows this to the one Review Card's own
+    // title, production-code-untouched.
+    await expect(
+      page.locator('[data-slot="card-title"]').filter({ hasText: /^Review file$/ })
+    ).toBeVisible();
     await expect(page.getByText(CLEAN_FILE.path, { exact: true })).toBeVisible();
     // Opening the page must not call the review API on its own (the bug
     // this test guards against: a Server Component firing the AI call
