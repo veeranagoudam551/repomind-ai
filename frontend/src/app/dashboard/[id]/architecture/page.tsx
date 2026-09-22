@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Network } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { analyzeRepositoryArchitecture, ApiError, describeApiError, getRepository } from "@/lib/api";
 import { deleteSession, getSessionToken } from "@/lib/session";
@@ -9,6 +10,8 @@ export default async function RepositoryArchitecturePage(
   props: PageProps<"/dashboard/[id]/architecture">
 ) {
   const { id } = await props.params;
+  const { run } = await props.searchParams;
+  const shouldRun = run === "1";
 
   const token = await getSessionToken();
   if (!token) {
@@ -32,12 +35,14 @@ export default async function RepositoryArchitecturePage(
   let analysis: string | undefined;
   let readmePath: string | null = null;
   let architectureError: string | undefined;
-  try {
-    const result = await analyzeRepositoryArchitecture(token, id);
-    analysis = result.analysis;
-    readmePath = result.readme_path;
-  } catch (err) {
-    architectureError = describeApiError(err);
+  if (shouldRun) {
+    try {
+      const result = await analyzeRepositoryArchitecture(token, id);
+      analysis = result.analysis;
+      readmePath = result.readme_path;
+    } catch (err) {
+      architectureError = describeApiError(err);
+    }
   }
 
   return (
@@ -58,12 +63,25 @@ export default async function RepositoryArchitecturePage(
             {readmePath ? ` and ${readmePath}` : ""}
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          {architectureError ? (
-            <p className="text-sm text-destructive">{architectureError}</p>
-          ) : (
-            <p className="whitespace-pre-wrap text-sm">{analysis}</p>
+        <CardContent className="flex flex-col gap-4">
+          <form className="flex">
+            <input type="hidden" name="run" value="1" />
+            <Button type="submit">
+              <Network />
+              Analyze architecture
+            </Button>
+          </form>
+
+          {architectureError && <p className="text-sm text-destructive">{architectureError}</p>}
+
+          {!shouldRun && !architectureError && (
+            <p className="text-sm text-muted-foreground">
+              Click &quot;Analyze architecture&quot; for a high-level overview of{" "}
+              {repository.name}&apos;s structure, tech stack, and entry points.
+            </p>
           )}
+
+          {analysis && <p className="whitespace-pre-wrap text-sm">{analysis}</p>}
         </CardContent>
       </Card>
     </main>

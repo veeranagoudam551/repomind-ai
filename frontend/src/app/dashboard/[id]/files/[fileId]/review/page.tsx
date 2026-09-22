@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, ClipboardCheck } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   ApiError,
@@ -15,6 +16,8 @@ export default async function ReviewFilePage(
   props: PageProps<"/dashboard/[id]/files/[fileId]/review">
 ) {
   const { id, fileId } = await props.params;
+  const { run } = await props.searchParams;
+  const shouldRun = run === "1";
 
   const token = await getSessionToken();
   if (!token) {
@@ -46,14 +49,16 @@ export default async function ReviewFilePage(
 
   let review: string | undefined;
   let reviewError: string | undefined;
-  try {
-    const result = await reviewRepositoryFile(token, id, fileId);
-    review = result.review;
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 404) {
-      notFound();
+  if (shouldRun) {
+    try {
+      const result = await reviewRepositoryFile(token, id, fileId);
+      review = result.review;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        notFound();
+      }
+      reviewError = describeApiError(err);
     }
-    reviewError = describeApiError(err);
   }
 
   return (
@@ -71,12 +76,25 @@ export default async function ReviewFilePage(
           <CardTitle className="text-xl">Review file</CardTitle>
           <CardDescription className="font-mono text-xs">{file.file_path}</CardDescription>
         </CardHeader>
-        <CardContent>
-          {reviewError ? (
-            <p className="text-sm text-destructive">{reviewError}</p>
-          ) : (
-            <p className="whitespace-pre-wrap text-sm">{review}</p>
+        <CardContent className="flex flex-col gap-4">
+          <form className="flex">
+            <input type="hidden" name="run" value="1" />
+            <Button type="submit">
+              <ClipboardCheck />
+              Review file
+            </Button>
+          </form>
+
+          {reviewError && <p className="text-sm text-destructive">{reviewError}</p>}
+
+          {!shouldRun && !reviewError && (
+            <p className="text-sm text-muted-foreground">
+              Click &quot;Review file&quot; to generate a code review of {file.file_path} - bugs,
+              security issues, edge cases, and code smells.
+            </p>
           )}
+
+          {review && <p className="whitespace-pre-wrap text-sm">{review}</p>}
         </CardContent>
       </Card>
     </main>

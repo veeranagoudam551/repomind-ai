@@ -102,6 +102,12 @@ export default async function RepositoryAgentPage(props: PageProps<"/dashboard/[
             </p>
           )}
 
+          {goal && !agentError && !answer && (
+            <p className="text-sm text-muted-foreground">
+              Agent completed without producing an answer. Please try the request again.
+            </p>
+          )}
+
           {answer && (
             <div className="flex flex-col gap-3">
               <p className="rounded-md border border-border bg-muted p-3 text-sm whitespace-pre-wrap">

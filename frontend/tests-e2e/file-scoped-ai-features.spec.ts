@@ -63,7 +63,7 @@ test.describe("file-scoped AI features (explain, review, architecture, security,
     await expect(page.getByText("ANTHROPIC_API_KEY is not configured")).toBeVisible();
   });
 
-  test("review renders the file path and a graceful error without a real ANTHROPIC_API_KEY", async ({
+  test("review does not call the API until the user clicks Review file, then shows a graceful error", async ({
     page,
   }) => {
     const email = uniqueEmail("e2e_review");
@@ -76,10 +76,18 @@ test.describe("file-scoped AI features (explain, review, architecture, security,
 
     await expect(page.getByText("Review file", { exact: true })).toBeVisible();
     await expect(page.getByText(CLEAN_FILE.path, { exact: true })).toBeVisible();
+    // Opening the page must not call the review API on its own (the bug
+    // this test guards against: a Server Component firing the AI call
+    // unconditionally during render).
+    await expect(page.getByText("ANTHROPIC_API_KEY is not configured")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Review file" }).click();
+
+    await expect(page).toHaveURL(/\?run=1/);
     await expect(page.getByText("ANTHROPIC_API_KEY is not configured")).toBeVisible();
   });
 
-  test("architecture works before ingestion completes and shows a graceful error", async ({
+  test("architecture does not call the API until the user clicks Analyze architecture, then shows a graceful error", async ({
     page,
   }) => {
     const email = uniqueEmail("e2e_architecture");
@@ -95,6 +103,14 @@ test.describe("file-scoped AI features (explain, review, architecture, security,
 
     await expect(page.getByText("Architecture", { exact: true })).toBeVisible();
     await expect(page.getByText("Based on 2 scanned files", { exact: true })).toBeVisible();
+    // Opening the page must not call the architecture API on its own (the
+    // bug this test guards against: a Server Component firing the AI call
+    // unconditionally during render).
+    await expect(page.getByText("ANTHROPIC_API_KEY is not configured")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Analyze architecture" }).click();
+
+    await expect(page).toHaveURL(/\?run=1/);
     await expect(page.getByText("ANTHROPIC_API_KEY is not configured")).toBeVisible();
   });
 
