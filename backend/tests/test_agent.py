@@ -15,7 +15,15 @@ these tests were replaced rather than deleted, per the same "no unnecessary
 JSON parsing/fallback logic" migration that removed the function itself.
 """
 
-from app.services.agent import TOOLS, UNTRUSTED_CONTENT_BEGIN, UNTRUSTED_CONTENT_END, AGENT_SYSTEM_PROMPT, _wrap_untrusted
+from app.services.agent import (
+    PLANNER_MAX_TOKENS,
+    SEARCH_LIMIT,
+    TOOLS,
+    UNTRUSTED_CONTENT_BEGIN,
+    UNTRUSTED_CONTENT_END,
+    AGENT_SYSTEM_PROMPT,
+    _wrap_untrusted,
+)
 
 EXPECTED_TOOL_NAMES = {
     "search_code",
@@ -73,3 +81,22 @@ def test_wrap_untrusted_marks_content_with_boundary_markers():
     assert wrapped.startswith(UNTRUSTED_CONTENT_BEGIN)
     assert wrapped.endswith(UNTRUSTED_CONTENT_END)
     assert "some repository-derived text" in wrapped
+
+
+# --- Token-consumption optimization constants -----------------------------
+
+
+def test_search_limit_is_reduced_to_two():
+    # A live failing request showed two search_code calls (5 chunks each,
+    # up to 100 lines/chunk) accounting for ~83% of the payload that
+    # tripped Groq's 8K TPM ceiling. Lowered from 5.
+    assert SEARCH_LIMIT == 2
+
+
+def test_planner_max_tokens_reduced_to_default_budget():
+    # Lowered from 2048: every other LLM-backed feature in this app
+    # already runs fine at DEFAULT_MAX_TOKENS (1024, llm.py), and live
+    # diagnostics never observed finish_reason="length" even when
+    # reasoning consumed most of a 2048 budget - the extra headroom was
+    # unused but still counted as reserved by Groq's rate limiter.
+    assert PLANNER_MAX_TOKENS == 1024

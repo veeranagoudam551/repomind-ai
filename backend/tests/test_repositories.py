@@ -1251,6 +1251,217 @@ async def test_agent_calls_search_code_tool_then_finishes(client, db_session, mo
     assert "app/main.py" in body["steps"][0]["summary"]
 
 
+async def test_agent_search_code_requests_at_most_search_limit_chunks(client, db_session, monkeypatch):
+    # SEARCH_LIMIT (2) must reach vector_store.search as the actual
+    # `limit` argument - the token-consumption fix only works if this is
+    # really enforced, not just documented.
+    headers = await register_and_login(client, "agent27@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    seen_limits = []
+
+    async def _fake_generate_with_tools(system_prompt, messages, tools, max_tokens=1024, tool_choice="auto"):
+        if not seen_limits:
+            return _calls([_tool_call("call_1", "search_code", {"query": "app factory"})])
+        return _finish("done")
+
+    async def _fake_embed(text):
+        return [0.1, 0.2]
+
+    async def _fake_search(vector, repository_id, limit=10):
+        seen_limits.append(limit)
+        return [{"id": str(chunk.id), "score": 0.9, "payload": {"code_chunk_id": str(chunk.id)}}]
+
+    monkeypatch.setattr("app.services.agent.generate_with_tools", _fake_generate_with_tools)
+    _mock_embed_query(monkeypatch, "app.services.agent.get_embedding_provider", _fake_embed)
+    monkeypatch.setattr("app.services.agent.vector_store.search", _fake_search)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent", json={"goal": "how is the app created?"}, headers=headers
+    )
+    assert response.status_code == 200
+    assert seen_limits == [2]
+
+
+async def test_agent_deduplicates_repeated_chunks_within_one_run(client, db_session, monkeypatch):
+    # Two search_code calls in the SAME Agent run that both match the same
+    # underlying chunks must not resend that code twice - the second
+    # result should only contain what's genuinely new.
+    headers = await register_and_login(client, "agent28@example.com")
+    repo_id, chunk1 = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    repo_file_2 = RepositoryFile(repository_id=repo_id, file_path="app/auth.py", size_bytes=10)
+    db_session.add(repo_file_2)
+    await db_session.commit()
+    await db_session.refresh(repo_file_2)
+    chunk2 = CodeChunk(
+        repository_id=repo_id,
+        repository_file_id=repo_file_2.id,
+        chunk_index=0,
+        content="def verify_token(token): ...",
+        start_line=1,
+        end_line=1,
+        vector_id="whatever2",
+    )
+    db_session.add(chunk2)
+    await db_session.commit()
+    await db_session.refresh(chunk2)
+
+    calls = {"count": 0}
+
+    async def _fake_generate_with_tools(system_prompt, messages, tools, max_tokens=1024, tool_choice="auto"):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _calls([_tool_call("call_1", "search_code", {"query": "app factory"})])
+        if calls["count"] == 2:
+            return _calls([_tool_call("call_2", "search_code", {"query": "authentication"})])
+        return _finish("done")
+
+    async def _fake_embed(text):
+        return [0.1, 0.2]
+
+    async def _fake_search(vector, repository_id, limit=10):
+        # Both calls' searches return the exact same two chunks - as if
+        # two different queries both matched the same indexed code.
+        return [
+            {"id": str(chunk1.id), "score": 0.9, "payload": {"code_chunk_id": str(chunk1.id)}},
+            {"id": str(chunk2.id), "score": 0.8, "payload": {"code_chunk_id": str(chunk2.id)}},
+        ]
+
+    monkeypatch.setattr("app.services.agent.generate_with_tools", _fake_generate_with_tools)
+    _mock_embed_query(monkeypatch, "app.services.agent.get_embedding_provider", _fake_embed)
+    monkeypatch.setattr("app.services.agent.vector_store.search", _fake_search)
+
+    response = await client.post(
+        f"/repositories/{repo_id}/agent",
+        json={"goal": "how does auth work?", "max_steps": 3},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["steps"]) == 2
+    # First call: both chunks are genuinely new.
+    assert "def create_app()" in body["steps"][0]["summary"]
+    assert "def verify_token(token)" in body["steps"][0]["summary"]
+    # Second call: same two chunks again - all duplicates, so neither
+    # chunk's raw code should be resent.
+    second_summary = body["steps"][1]["summary"]
+    assert "def create_app()" not in second_summary
+    assert "def verify_token(token)" not in second_summary
+    assert "no NEW relevant code" in second_summary
+    assert "2 matching chunk(s)" in second_summary
+
+
+async def test_agent_dedup_reduces_repeated_tool_result_size(client, db_session, monkeypatch):
+    # Deterministic token-consumption diagnostic (character-level, honest
+    # about not claiming an exact Groq token count - no tokenizer is
+    # available in this environment): directly measures how many fewer
+    # characters get sent to the LLM when the same chunks resurface later
+    # in one Agent run, compared to resending them in full every time.
+    from app.services.agent import _search_chunks
+
+    headers = await register_and_login(client, "agent30@example.com")
+    repo_id, chunk1 = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    repo_file_2 = RepositoryFile(repository_id=repo_id, file_path="app/auth.py", size_bytes=10)
+    db_session.add(repo_file_2)
+    await db_session.commit()
+    await db_session.refresh(repo_file_2)
+    chunk2 = CodeChunk(
+        repository_id=repo_id,
+        repository_file_id=repo_file_2.id,
+        chunk_index=0,
+        # Deliberately more substantial content, closer to a real indexed
+        # code chunk, so the size comparison is meaningful rather than
+        # trivial.
+        content="def verify_token(token):\n" + "\n".join(f"    # line {i}" for i in range(40)),
+        start_line=1,
+        end_line=41,
+        vector_id="whatever2",
+    )
+    db_session.add(chunk2)
+    await db_session.commit()
+    await db_session.refresh(chunk2)
+
+    async def _fake_embed(text):
+        return [0.1, 0.2]
+
+    _mock_embed_query(monkeypatch, "app.services.agent.get_embedding_provider", _fake_embed)
+
+    async def _fake_search(vector, repository_id, limit=10):
+        return [
+            {"id": str(chunk1.id), "score": 0.9, "payload": {"code_chunk_id": str(chunk1.id)}},
+            {"id": str(chunk2.id), "score": 0.8, "payload": {"code_chunk_id": str(chunk2.id)}},
+        ]
+
+    monkeypatch.setattr("app.services.agent.vector_store.search", _fake_search)
+
+    # Call 1: nothing seen yet - both chunks are new, full content returned.
+    blocks1, error1, seen_after_1, dup1 = await _search_chunks(repo_id, "app factory", db_session, set())
+    assert error1 is None
+    assert dup1 == 0
+    call1_chars = len("\n\n".join(blocks1))
+
+    # Call 2: same two chunks resurface for a different query in the same
+    # run - with dedup, this must send far fewer (here: zero) characters
+    # than resending the same content again would cost.
+    blocks2, error2, _seen_after_2, dup2 = await _search_chunks(
+        repo_id, "authentication", db_session, seen_after_1
+    )
+    assert error2 is None
+    assert dup2 == 2
+    call2_chars_with_dedup = len("\n\n".join(blocks2))
+    call2_chars_without_dedup = call1_chars  # what resending the same chunks would have cost
+
+    assert call2_chars_with_dedup == 0
+    assert call1_chars > 0
+    reduction_pct = 100 * (call2_chars_without_dedup - call2_chars_with_dedup) / call2_chars_without_dedup
+    # Honest, character-based evidence only - no fabricated Groq token
+    # count. In this deterministic scenario, deduplication eliminates
+    # 100% of the second call's would-be repeated content.
+    assert reduction_pct == 100.0
+
+
+async def test_agent_dedup_does_not_cross_separate_runs(client, db_session, monkeypatch):
+    # seen_chunk_ids lives in AgentState, created fresh in run_agent - a
+    # brand new Agent request (a separate HTTP call, a separate
+    # run_agent() invocation) must NOT treat a chunk as already-seen just
+    # because an earlier, unrelated request returned it.
+    headers = await register_and_login(client, "agent29@example.com")
+    repo_id, chunk = await _make_searchable_repository(client, db_session, monkeypatch, headers)
+
+    async def _fake_generate_with_tools(system_prompt, messages, tools, max_tokens=1024, tool_choice="auto"):
+        if not any(m.get("role") == "tool" for m in messages):
+            return _calls([_tool_call("call_1", "search_code", {"query": "app factory"})])
+        return _finish("done")
+
+    async def _fake_embed(text):
+        return [0.1, 0.2]
+
+    async def _fake_search(vector, repository_id, limit=10):
+        return [{"id": str(chunk.id), "score": 0.9, "payload": {"code_chunk_id": str(chunk.id)}}]
+
+    monkeypatch.setattr("app.services.agent.generate_with_tools", _fake_generate_with_tools)
+    _mock_embed_query(monkeypatch, "app.services.agent.get_embedding_provider", _fake_embed)
+    monkeypatch.setattr("app.services.agent.vector_store.search", _fake_search)
+
+    # Two entirely separate /agent requests, same repository/chunk.
+    response1 = await client.post(
+        f"/repositories/{repo_id}/agent", json={"goal": "how is the app created?"}, headers=headers
+    )
+    response2 = await client.post(
+        f"/repositories/{repo_id}/agent", json={"goal": "how is the app created, again?"}, headers=headers
+    )
+    assert response1.status_code == 200
+    assert response2.status_code == 200
+    body1 = response1.json()
+    body2 = response2.json()
+    # Both runs see the chunk as genuinely new - no cross-run dedup state.
+    assert "def create_app()" in body1["steps"][0]["summary"]
+    assert "def create_app()" in body2["steps"][0]["summary"]
+    assert "no NEW relevant code" not in body2["steps"][0]["summary"]
+
+
 async def test_agent_treats_repository_content_as_untrusted(client, db_session, monkeypatch):
     # Day 58 regression test, re-derived for native tool calling: a
     # repository can contain a code comment or string crafted to look like

@@ -80,13 +80,34 @@ from app.services.vector_store import VectorStoreError
 # most callers just want the sensible default rather than picking a
 # number every time.
 MAX_TOOL_CALLS = 4
-SEARCH_LIMIT = 5
+# Token-consumption investigation: a live failing request showed two
+# search_code calls (5 chunks x up to 100 lines each) alone accounting for
+# ~83% of the payload that tripped Groq's 8K TPM ceiling by the 3rd
+# planning call. Lowered from 5 - still enough relevant context per call,
+# at roughly 40% of the previous raw-code volume. Agent-only: the
+# standalone POST /repositories/{id}/search endpoint calls
+# vector_store.search directly with its own `limit` and never goes through
+# _search_chunks below, so this has no effect on non-Agent search.
+SEARCH_LIMIT = 2
 
-# Planner-specific override of llm.py's DEFAULT_MAX_TOKENS (1024) - a
-# generous budget for a turn that may need to both reason about the goal
-# and emit a full final answer. Scoped to just plan_node's call rather
-# than raising DEFAULT_MAX_TOKENS for every LLM call in the app.
-PLANNER_MAX_TOKENS = 2048
+# Planner-specific override of llm.py's DEFAULT_MAX_TOKENS. Lowered from
+# 2048: every other LLM-backed feature in this app (chat, explain, review,
+# debug, architecture) already runs fine at DEFAULT_MAX_TOKENS (1024), and
+# live diagnostics during the native-tool-calling investigation never once
+# observed finish_reason="length" even when reasoning consumed most of a
+# 2048 budget - so 2048 was never actually needed for truncation-avoidance,
+# only unused headroom that Groq's rate limiter still counts as reserved.
+# Applied uniformly to every planner call (tool-selection and finish
+# alike) rather than a smaller/larger split by turn type: a plain
+# tool_choice="auto" turn can *also* end up being the turn that produces
+# the final answer (the model can finish early, before max_steps, with no
+# tool call at all) - so there's no reliable way to know in advance which
+# turns need the larger "synthesis" budget and which don't, and guessing
+# wrong would risk truncating a legitimate early answer. A single, smaller
+# constant - consistent with the budget already proven sufficient
+# elsewhere in this app - is the smallest change that doesn't add that
+# risk or that guesswork.
+PLANNER_MAX_TOKENS = 1024
 
 # Day 58, re-derived for native tool calling: every tool here can return
 # repository-derived content (source code via search_code, LLM summaries
@@ -253,30 +274,52 @@ class AgentState(TypedDict):
     steps: list[AgentStep]
     pending_tool_calls: Optional[list[AgentToolCall]]
     answer: Optional[str]
+    # Chunk IDs already returned to the model by search_code/debug earlier
+    # in *this* run - purely in-memory, part of the same per-request
+    # LangGraph state as everything else here (created fresh in run_agent,
+    # never a module-level/global set, never persisted). Not a search
+    # index change: vector_store.search and Qdrant are untouched, and nothing
+    # outside this one Agent run ever sees or is affected by this set - a
+    # fresh Agent request starts with an empty one, and the standalone
+    # POST /repositories/{id}/search endpoint doesn't use this state at all.
+    seen_chunk_ids: set[str]
 
 
 async def _search_chunks(
-    repository_id: UUID, query: str, db: AsyncSession
-) -> tuple[list[str], Optional[str]]:
+    repository_id: UUID, query: str, db: AsyncSession, seen_chunk_ids: set[str]
+) -> tuple[list[str], Optional[str], set[str], int]:
     """Shared by search_code and debug, which both embed a query and search
     Qdrant before diverging (search_code returns the raw snippets, debug
-    feeds them to the LLM for a diagnosis). Returns (blocks, error) - on
-    any failure or no-match, blocks is empty and error is a short message
-    the caller prefixes with its own tool name."""
+    feeds them to the LLM for a diagnosis). Returns (blocks, error,
+    updated_seen_chunk_ids, duplicate_count):
+
+    - blocks: only chunks NOT already in seen_chunk_ids (deduplicated
+      against everything this same Agent run has already shown the model -
+      resending identical code the model already has in its own context
+      wastes tokens for no benefit).
+    - updated_seen_chunk_ids: seen_chunk_ids plus every chunk ID this call
+      matched (new or duplicate) - so a chunk that resurfaces again later
+      in the same run is still recognized as already-seen.
+    - duplicate_count: how many of this call's own matches were already
+      seen - lets the caller report "no NEW results" instead of either
+      silently returning nothing or resending duplicate code.
+
+    On any failure or no-match, blocks is empty and error is a short
+    message the caller prefixes with its own tool name."""
     try:
         vector = await get_embedding_provider().embed_query(query)
     except EmbeddingConfigError as exc:
-        return [], f"unavailable: {exc}"
+        return [], f"unavailable: {exc}", seen_chunk_ids, 0
     except EmbeddingAPIError as exc:
-        return [], f"failed: {exc}"
+        return [], f"failed: {exc}", seen_chunk_ids, 0
 
     try:
         hits = await vector_store.search(vector, repository_id, limit=SEARCH_LIMIT)
     except VectorStoreError as exc:
-        return [], f"failed: {exc}"
+        return [], f"failed: {exc}", seen_chunk_ids, 0
 
     if not hits:
-        return [], None
+        return [], None, seen_chunk_ids, 0
 
     chunk_ids = [UUID(hit["payload"]["code_chunk_id"]) for hit in hits]
     rows = await db.execute(
@@ -287,13 +330,21 @@ async def _search_chunks(
     by_id = {chunk.id: (chunk, file_path) for chunk, file_path in rows}
 
     blocks = []
+    updated_seen = set(seen_chunk_ids)
+    duplicate_count = 0
     for hit in hits:
         cid = UUID(hit["payload"]["code_chunk_id"])
         if cid not in by_id:
             continue
+        cid_str = str(cid)
+        if cid_str in seen_chunk_ids:
+            duplicate_count += 1
+            updated_seen.add(cid_str)
+            continue
         chunk, file_path = by_id[cid]
         blocks.append(f"{file_path} (lines {chunk.start_line}-{chunk.end_line}):\n{chunk.content}")
-    return blocks, None
+        updated_seen.add(cid_str)
+    return blocks, None, updated_seen, duplicate_count
 
 
 async def _load_file_content(repository_id: UUID, file_path: str, db: AsyncSession) -> str:
@@ -325,27 +376,47 @@ async def _load_file_content(repository_id: UUID, file_path: str, db: AsyncSessi
     return reconstruct_file_content(chunks)
 
 
-async def _tool_search_code(repository_id: UUID, arguments: dict, db: AsyncSession) -> str:
+async def _tool_search_code(
+    repository_id: UUID, arguments: dict, db: AsyncSession, seen_chunk_ids: set[str]
+) -> tuple[str, set[str]]:
     query = str(arguments.get("query") or "").strip()
     if not query:
-        return "search_code error: no query provided"
+        return "search_code error: no query provided", seen_chunk_ids
 
-    blocks, error = await _search_chunks(repository_id, query, db)
+    blocks, error, updated_seen, duplicate_count = await _search_chunks(
+        repository_id, query, db, seen_chunk_ids
+    )
     if error:
-        return f"search_code {error}"
-    return "\n\n".join(blocks) if blocks else "search_code found no relevant code for that query."
+        return f"search_code {error}", updated_seen
+    if blocks:
+        return "\n\n".join(blocks), updated_seen
+    if duplicate_count:
+        return (
+            f"search_code found no NEW relevant code for that query - "
+            f"{duplicate_count} matching chunk(s) were already shown earlier in this session."
+        ), updated_seen
+    return "search_code found no relevant code for that query.", updated_seen
 
 
-async def _tool_debug(repository_id: UUID, arguments: dict, db: AsyncSession) -> str:
+async def _tool_debug(
+    repository_id: UUID, arguments: dict, db: AsyncSession, seen_chunk_ids: set[str]
+) -> tuple[str, set[str]]:
     description = str(arguments.get("description") or "").strip()
     if not description:
-        return "debug error: no description provided"
+        return "debug error: no description provided", seen_chunk_ids
 
-    blocks, error = await _search_chunks(repository_id, description, db)
+    blocks, error, updated_seen, duplicate_count = await _search_chunks(
+        repository_id, description, db, seen_chunk_ids
+    )
     if error:
-        return f"debug {error}"
+        return f"debug {error}", updated_seen
     if not blocks:
-        return "debug found no relevant code for that description."
+        if duplicate_count:
+            return (
+                f"debug found no NEW relevant code for that description - "
+                f"{duplicate_count} matching chunk(s) were already shown earlier in this session."
+            ), updated_seen
+        return "debug found no relevant code for that description.", updated_seen
 
     system_prompt = (
         "You are debugging an issue in a specific repository. Given the "
@@ -355,11 +426,11 @@ async def _tool_debug(repository_id: UUID, arguments: dict, db: AsyncSession) ->
     )
     user_prompt = f"Retrieved context:\n\n{chr(10).join(blocks)}\n\nBug description: {description}"
     try:
-        return await generate_response(system_prompt, user_prompt)
+        return await generate_response(system_prompt, user_prompt), updated_seen
     except LLMConfigError as exc:
-        return f"debug unavailable: {exc}"
+        return f"debug unavailable: {exc}", updated_seen
     except LLMAPIError as exc:
-        return f"debug failed: {exc}"
+        return f"debug failed: {exc}", updated_seen
 
 
 async def _tool_explain_file(repository_id: UUID, arguments: dict, db: AsyncSession) -> str:
@@ -578,6 +649,11 @@ def _build_graph(repository_id: UUID, db: AsyncSession, max_steps: int):
         pending = state["pending_tool_calls"] or []
         new_steps = list(state["steps"])
         tool_messages: list[dict] = []
+        # Threaded through (and updated by) search_code/debug across every
+        # call in this act_node invocation, not just across turns - two
+        # search_code calls requested in the same planning turn dedupe
+        # against each other too, not only against earlier turns.
+        seen_chunk_ids = set(state["seen_chunk_ids"])
 
         for call in pending:
             name = call.get("name")
@@ -585,13 +661,17 @@ def _build_graph(repository_id: UUID, db: AsyncSession, max_steps: int):
             call_id = call.get("id") or ""
 
             if name == "search_code":
-                summary = await _tool_search_code(repository_id, arguments, db)
+                summary, seen_chunk_ids = await _tool_search_code(
+                    repository_id, arguments, db, seen_chunk_ids
+                )
             elif name == "explain_file":
                 summary = await _tool_explain_file(repository_id, arguments, db)
             elif name == "review_file":
                 summary = await _tool_review_file(repository_id, arguments, db)
             elif name == "debug":
-                summary = await _tool_debug(repository_id, arguments, db)
+                summary, seen_chunk_ids = await _tool_debug(
+                    repository_id, arguments, db, seen_chunk_ids
+                )
             elif name == "architecture":
                 summary = await _tool_architecture(repository_id, arguments, db)
             elif name == "security_scan":
@@ -614,6 +694,7 @@ def _build_graph(repository_id: UUID, db: AsyncSession, max_steps: int):
         return {
             **state,
             "steps": new_steps,
+            "seen_chunk_ids": seen_chunk_ids,
             "messages": state["messages"] + tool_messages,
             "pending_tool_calls": None,
         }
@@ -640,5 +721,6 @@ async def run_agent(
         "steps": [],
         "pending_tool_calls": None,
         "answer": None,
+        "seen_chunk_ids": set(),
     }
     return await graph.ainvoke(initial_state)
