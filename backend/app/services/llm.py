@@ -40,11 +40,14 @@ shape so agent.py never has to know which provider it's talking to:
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Optional, Protocol, runtime_checkable
 
 import httpx
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_BASE = "https://api.anthropic.com/v1"
 ANTHROPIC_API_VERSION = "2023-06-01"
@@ -61,6 +64,39 @@ _ANTHROPIC_FINISH_REASON_MAP = {
     "end_turn": "stop",
     "max_tokens": "length",
 }
+
+# Groq's "reasoning" model family (gpt-oss) can spend its entire
+# max_tokens budget on an internal `message.reasoning` field before ever
+# emitting anything into the `message.content` field this module actually
+# reads - a live QA pass reproduced this directly against
+# GROQ_MODEL's own default ("openai/gpt-oss-120b"): the same review
+# request returned empty content with finish_reason="length" on one run,
+# and a real, substantial review on another, purely from how the model
+# chose to split its fixed token budget between reasoning and the final
+# answer. `reasoning_effort="low"` - a real Groq/gpt-oss request
+# parameter - asks the model to spend less of that same budget on
+# reasoning, leaving more for content, without touching max_tokens (or
+# this request's TPM footprint) at all: the same reproduction with this
+# parameter added dropped reasoning tokens from 39 to 7 and turned an
+# empty response into 4,468 characters of real content, at the same
+# max_tokens=1024. Deliberately still reads only `message.content`, never
+# `message.reasoning`, for the actual answer - the reasoning field is the
+# model's own internal scratch space, not written as a finished,
+# user-facing answer, so treating it as one would trade "sometimes empty"
+# for "sometimes shows the model's raw, unpolished train of thought."
+#
+# GROQ_MODEL is a free-text, operator-configurable setting (see
+# app/core/config.py) - not every Groq model is a reasoning model, and a
+# non-reasoning model may reject or silently ignore an unrecognized
+# request parameter. Gated on the model name actually being one of this
+# specific family, so a future GROQ_MODEL change to a non-reasoning model
+# never sends a parameter it was never tested against.
+_GROQ_REASONING_MODEL_MARKERS = ("gpt-oss",)
+
+
+def _groq_model_supports_reasoning_effort(model: str) -> bool:
+    lowered = model.lower()
+    return any(marker in lowered for marker in _GROQ_REASONING_MODEL_MARKERS)
 
 
 class LLMConfigError(Exception):
@@ -125,6 +161,32 @@ def _rate_limit_message(response: httpx.Response) -> str:
     return _RATE_LIMIT_MESSAGE
 
 
+def _generic_error_message(provider_name: str, response: httpx.Response) -> str:
+    """The safe, client-facing message for every provider HTTP status this
+    module doesn't already give a dedicated meaning to (200 and 429 are
+    both handled separately, above/by their own callers). The full raw
+    status and body are logged here, server-side, for debugging - never
+    included in the returned message, which is what every existing
+    `except LLMAPIError as exc: raise HTTPException(..., detail=str(exc))`
+    across repositories.py/conversations.py turns directly into what the
+    client sees.
+
+    A live QA pass found the previous per-call-site
+    `f"{provider} API returned {status}: {response.text}"` message
+    (previously used for anything other than 429) leaking a real Groq 413
+    response's organization id and billing URL verbatim to an end user -
+    this replaces every one of those with the same safe shape instead.
+    """
+    logger.error(
+        "%s API returned %s: %s", provider_name, response.status_code, response.text
+    )
+    return (
+        f"The {provider_name} API returned an unexpected error "
+        f"(HTTP {response.status_code}). Please try again, or use a "
+        "smaller file or request if it may have been too large."
+    )
+
+
 @runtime_checkable
 class LLMProvider(Protocol):
     async def generate(self, system_prompt: str, user_message: str, max_tokens: int) -> str:
@@ -173,9 +235,7 @@ class AnthropicLLMProvider:
         if response.status_code == 429:
             raise LLMRateLimitError(_rate_limit_message(response))
         if response.status_code != 200:
-            raise LLMAPIError(
-                f"Anthropic API returned {response.status_code}: {response.text}"
-            )
+            raise LLMAPIError(_generic_error_message("Anthropic", response))
 
         data = response.json()
         blocks = [block["text"] for block in data["content"] if block.get("type") == "text"]
@@ -275,9 +335,7 @@ class AnthropicLLMProvider:
         if response.status_code == 429:
             raise LLMRateLimitError(_rate_limit_message(response))
         if response.status_code != 200:
-            raise LLMAPIError(
-                f"Anthropic API returned {response.status_code}: {response.text}"
-            )
+            raise LLMAPIError(_generic_error_message("Anthropic", response))
 
         data = response.json()
         stop_reason = data.get("stop_reason") or "end_turn"
@@ -316,7 +374,7 @@ class GroqLLMProvider:
             "Authorization": f"Bearer {settings.groq_api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
+        payload: dict[str, Any] = {
             "model": settings.groq_model,
             "max_tokens": max_tokens,
             "messages": [
@@ -324,6 +382,8 @@ class GroqLLMProvider:
                 {"role": "user", "content": user_message},
             ],
         }
+        if _groq_model_supports_reasoning_effort(settings.groq_model):
+            payload["reasoning_effort"] = "low"
 
         try:
             async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT_SECONDS) as client:
@@ -336,7 +396,7 @@ class GroqLLMProvider:
         if response.status_code == 429:
             raise LLMRateLimitError(_rate_limit_message(response))
         if response.status_code != 200:
-            raise LLMAPIError(f"Groq API returned {response.status_code}: {response.text}")
+            raise LLMAPIError(_generic_error_message("Groq", response))
 
         data = response.json()
         return data["choices"][0]["message"]["content"]
@@ -425,10 +485,21 @@ class GroqLLMProvider:
                 if error_body.get("code") == "tool_use_failed" and (
                     "tool choice is none" in error_body.get("message", "").lower()
                 ):
+                    # Detection still inspects the raw body above (needed
+                    # to tell this specific, expected condition apart from
+                    # any other 400) - only the message this exception
+                    # carries onward is sanitized (_generic_error_message
+                    # logs the raw body server-side already). agent.py's
+                    # own `except LLMToolChoiceViolationError` (its only
+                    # consumer) matches by type, never by message content,
+                    # but a non-forced-finish turn lets this propagate all
+                    # the way to an HTTPException's `detail` unchanged, so
+                    # its message needs to be just as safe as the generic
+                    # fallback below.
                     raise LLMToolChoiceViolationError(
-                        f"Groq API returned 400: {response.text}"
+                        _generic_error_message("Groq", response)
                     )
-            raise LLMAPIError(f"Groq API returned {response.status_code}: {response.text}")
+            raise LLMAPIError(_generic_error_message("Groq", response))
 
         data = response.json()
         choice = data["choices"][0]

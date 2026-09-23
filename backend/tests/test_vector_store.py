@@ -8,6 +8,7 @@ import json
 import httpx
 import pytest
 
+from app.core.config import settings
 from app.services.vector_store import (
     VectorStoreError,
     delete_by_repository,
@@ -145,6 +146,7 @@ async def test_search_sends_vector_and_repository_filter(monkeypatch):
         assert payload["filter"] == {
             "must": [{"key": "repository_id", "match": {"value": "repo-1"}}]
         }
+        assert payload["score_threshold"] == settings.search_score_threshold
         return httpx.Response(
             200,
             json={"result": [{"id": "abc", "score": 0.9, "payload": {"code_chunk_id": "c1"}}]},
@@ -273,3 +275,108 @@ async def test_ensure_collection_allows_matching_dimension(monkeypatch):
 
     _install_mock_transport(monkeypatch, handler)
     await ensure_collection(384)  # must not raise
+
+
+# --- Search relevance threshold (Phase 4, Part B) ---------------------------
+#
+# The actual filtering happens server-side in Qdrant (score_threshold in
+# the request body, asserted directly above) - Qdrant never returns a hit
+# scoring below it in the first place, so these exercise search()'s own
+# job: sending the configured threshold correctly, and passing through
+# whatever shape Qdrant's own filtering produces (a full list, a partial
+# one, or none at all) without this module doing any filtering of its
+# own or treating an empty result as an error.
+
+
+async def test_search_uses_configured_score_threshold_value(monkeypatch):
+    monkeypatch.setattr(settings, "search_score_threshold", 0.42)
+
+    def handler(request):
+        payload = json.loads(request.content)
+        assert payload["score_threshold"] == 0.42
+        return httpx.Response(200, json={"result": []})
+
+    _install_mock_transport(monkeypatch, handler)
+    await search([0.1], "repo-1")
+
+
+async def test_search_returns_relevant_result_above_threshold(monkeypatch):
+    # A relevant-shaped result, scored well above the default 0.25 - the
+    # observed "genuinely relevant" range from the live QA pass (~0.31-0.39).
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "result": [
+                    {"id": "abc", "score": 0.35, "payload": {"code_chunk_id": "c1"}}
+                ]
+            },
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    hits = await search([0.1], "repo-1")
+    assert len(hits) == 1
+    assert hits[0]["score"] == 0.35
+
+
+async def test_search_all_results_below_threshold_returns_empty_list(monkeypatch):
+    # What Qdrant itself returns for a query where nothing clears
+    # score_threshold - the observed "nonsense query" shape (~0.20-0.22),
+    # below the default 0.25. No exception, no fabricated result - a
+    # clean empty list, the same shape an empty/missing collection
+    # already produces (test_search_returns_empty_list_when_collection_missing
+    # above), so every existing "no results" caller already handles it.
+    def handler(request):
+        return httpx.Response(200, json={"result": []})
+
+    _install_mock_transport(monkeypatch, handler)
+    hits = await search([0.1], "repo-1")
+    assert hits == []
+
+
+async def test_search_mixed_scores_only_qualifying_results_pass_through(monkeypatch):
+    # Simulates what Qdrant's own score_threshold filtering produces for a
+    # query with some, but not all, relevant chunks: only the hits that
+    # already cleared the bar are ever in the response body at all - this
+    # confirms search() doesn't second-guess or re-filter Qdrant's own
+    # result set (e.g. accidentally dropping a qualifying low-but-passing
+    # score, or mis-ordering it).
+    def handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "result": [
+                    {"id": "a", "score": 0.39, "payload": {"code_chunk_id": "c1"}},
+                    {"id": "b", "score": 0.31, "payload": {"code_chunk_id": "c2"}},
+                    {"id": "c", "score": 0.26, "payload": {"code_chunk_id": "c3"}},
+                ]
+            },
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    hits = await search([0.1], "repo-1")
+    assert [h["id"] for h in hits] == ["a", "b", "c"]
+    assert all(h["score"] >= settings.search_score_threshold for h in hits)
+
+
+async def test_search_respects_limit_among_qualifying_results(monkeypatch):
+    # Existing top-K behavior is preserved for results that pass the
+    # threshold - limit and score_threshold are independent constraints
+    # Qdrant applies together, not one replacing the other.
+    def handler(request):
+        payload = json.loads(request.content)
+        assert payload["limit"] == 2
+        assert payload["score_threshold"] == settings.search_score_threshold
+        return httpx.Response(
+            200,
+            json={
+                "result": [
+                    {"id": "a", "score": 0.39, "payload": {"code_chunk_id": "c1"}},
+                    {"id": "b", "score": 0.33, "payload": {"code_chunk_id": "c2"}},
+                ]
+            },
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    hits = await search([0.1], "repo-1", limit=2)
+    assert len(hits) == 2

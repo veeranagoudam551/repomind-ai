@@ -29,6 +29,8 @@ from app.models.user import User
 from app.services.repository_ingestion import (
     RepositoryIngestionError,
     _download_tarball,
+    _is_excluded_filename,
+    _scan_files,
     ingest_repository,
 )
 
@@ -397,3 +399,244 @@ async def test_ingest_repository_fails_with_useful_message_when_github_unreachab
     assert repository.status == RepositoryStatus.FAILED
     assert "Could not reach GitHub" in repository.error_message
     assert "octocat/Hello-World@main" in repository.error_message
+
+
+# --- Secret-bearing filename exclusion (Phase 4, Part A) -------------------
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        ".env",
+        ".env.production",
+        ".env.local",
+        ".env.development",
+        ".env.test",
+        ".ENV.PRODUCTION",  # case-insensitive
+        "server.pem",
+        "private.key",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "credentials.json",
+        "service-account.json",
+        "serviceAccountKey.json",
+        "my-project-service_account.json",
+        ".npmrc",
+        ".pypirc",
+    ],
+)
+def test_is_excluded_filename_excludes_known_secret_patterns(filename):
+    assert _is_excluded_filename(filename) is True
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        ".env.example",
+        ".env.sample",
+        ".env.template",
+        ".ENV.EXAMPLE",  # case-insensitive
+        "config.py",
+        "settings.py",
+        "application.yml",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json",
+        "docker-compose.json",
+        "keystore_config.py",
+        "credentials_model.py",
+        "environment.py",
+        "account_service.py",  # "account" + "service" present but not the json pattern
+        "README.md",
+    ],
+)
+def test_is_excluded_filename_keeps_legitimate_files(filename):
+    assert _is_excluded_filename(filename) is False
+
+
+def test_scan_files_excludes_secrets_but_keeps_normal_files(tmp_path):
+    (tmp_path / ".env").write_text("SECRET=1\n")
+    (tmp_path / ".env.production").write_text("SECRET=2\n")
+    (tmp_path / ".env.example").write_text("SECRET=changeme\n")
+    (tmp_path / "id_rsa").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n")
+    (tmp_path / "server.pem").write_text("-----BEGIN CERTIFICATE-----\n")
+    (tmp_path / "credentials.json").write_text('{"key": "secret"}\n')
+    (tmp_path / ".npmrc").write_text("//registry.npmjs.org/:_authToken=abc\n")
+    backend_dir = tmp_path / "backend"
+    backend_dir.mkdir()
+    (backend_dir / ".env").write_text("NESTED_SECRET=1\n")
+    (tmp_path / "config.py").write_text("DEBUG = True\n")
+    (tmp_path / "package.json").write_text('{"name": "demo"}\n')
+
+    scanned = _scan_files(str(tmp_path))
+    scanned_paths = {f["file_path"] for f in scanned}
+
+    assert scanned_paths == {"config.py", "package.json", ".env.example"}
+
+
+# --- End-to-end: excluded files never reach repository_files/chunks/ -------
+# --- embedding/Qdrant (Phase 4, Part A, requirement 4) ----------------------
+
+
+async def test_ingest_repository_never_persists_or_embeds_a_secret_file(db_session, monkeypatch):
+    repository = await _make_repository(db_session)
+
+    tarball = _make_tarball(
+        {
+            "backend/.env": b"DB_PASSWORD=reallysecret\n",
+            "backend/app/main.py": b"def create_app():\n    return {}\n",
+        }
+    )
+
+    async def _fake_download(owner, repo, ref):
+        return tarball
+
+    embed_calls: list[list[str]] = []
+
+    class _FakeEmbeddingProvider:
+        async def embed_texts(self, texts):
+            embed_calls.append(list(texts))
+            return [[0.0, 0.0] for _ in texts]
+
+    upsert_calls: list[list[dict]] = []
+
+    async def _fake_upsert(points):
+        upsert_calls.append(points)
+
+    async def _fake_delete(repository_id):
+        return None
+
+    monkeypatch.setattr("app.services.repository_ingestion._download_tarball", _fake_download)
+    monkeypatch.setattr(
+        "app.services.repository_ingestion.get_embedding_provider",
+        lambda: _FakeEmbeddingProvider(),
+    )
+    monkeypatch.setattr("app.services.repository_ingestion.vector_store.upsert_chunks", _fake_upsert)
+    monkeypatch.setattr(
+        "app.services.repository_ingestion.vector_store.delete_by_repository", _fake_delete
+    )
+    monkeypatch.setattr("app.services.repository_ingestion.AsyncSessionLocal", lambda: db_session)
+
+    await ingest_repository(repository.id)
+
+    repository = await db_session.get(Repository, repository.id)
+    assert repository.status == RepositoryStatus.COMPLETED
+    # Only the legitimate file was scanned/counted.
+    assert repository.file_count == 1
+
+    files = (
+        await db_session.execute(
+            select(RepositoryFile).where(RepositoryFile.repository_id == repository.id)
+        )
+    ).scalars().all()
+    file_paths = {f.file_path for f in files}
+    assert file_paths == {"backend/app/main.py"}
+    assert ".env" not in " ".join(file_paths)
+
+    # No chunk anywhere carries the secret file's content.
+    chunks = (
+        await db_session.execute(select(CodeChunk).where(CodeChunk.repository_id == repository.id))
+    ).scalars().all()
+    for chunk in chunks:
+        assert "reallysecret" not in chunk.content
+
+    # The embedding provider and Qdrant upsert never even saw the
+    # secret's content - not just "it got filtered out of what got
+    # stored", but "it was never sent anywhere outside this process".
+    all_embedded_texts = [text for call in embed_calls for text in call]
+    assert not any("reallysecret" in text for text in all_embedded_texts)
+    all_upserted_points = [point for call in upsert_calls for point in call]
+    assert len(all_upserted_points) == len(chunks)
+
+
+# --- Re-ingestion already removes stale files/chunks/vectors ---------------
+# (Phase 4, Part A: "inspect whether an already-ingested secret file can
+# remain in the database/Qdrant after a re-ingestion"). Verified here
+# directly against real database behavior (code_chunks.repository_file_id
+# has a real ON DELETE CASCADE - see alembic/versions/7fa9ae014d2e - and
+# ingest_repository() already deletes every repository_files row plus
+# calls vector_store.delete_by_repository() before inserting anything
+# from the fresh scan), not asserted by reading the code alone.
+
+
+async def test_reindex_removes_a_previously_ingested_files_stale_chunks(db_session, monkeypatch):
+    repository = await _make_repository(db_session)
+
+    # Simulate a file that was really indexed by an earlier run (e.g. an
+    # older code version, before this phase's filename exclusion existed)
+    # and is now gone from the repository's current tree entirely -
+    # deliberately not re-testing the exclusion filter itself here (the
+    # tests above already cover that); this isolates "does a stale row
+    # get cleaned up by a reindex" as its own question.
+    stale_file = RepositoryFile(
+        repository_id=repository.id,
+        file_path="backend/.env",
+        language=None,
+        size_bytes=20,
+        content_hash="stale",
+    )
+    db_session.add(stale_file)
+    await db_session.flush()
+    stale_chunk = CodeChunk(
+        id=uuid.uuid4(),
+        repository_id=repository.id,
+        repository_file_id=stale_file.id,
+        chunk_index=0,
+        content="DB_PASSWORD=reallysecret",
+        start_line=1,
+        end_line=1,
+        vector_id=str(uuid.uuid4()),
+    )
+    db_session.add(stale_chunk)
+    await db_session.commit()
+
+    tarball = _make_tarball({"backend/app/main.py": b"def create_app():\n    return {}\n"})
+
+    async def _fake_download(owner, repo, ref):
+        return tarball
+
+    class _FakeEmbeddingProvider:
+        async def embed_texts(self, texts):
+            return [[0.0, 0.0] for _ in texts]
+
+    delete_calls: list = []
+
+    async def _fake_delete(repository_id):
+        delete_calls.append(repository_id)
+
+    async def _noop_upsert(points):
+        return None
+
+    monkeypatch.setattr("app.services.repository_ingestion._download_tarball", _fake_download)
+    monkeypatch.setattr(
+        "app.services.repository_ingestion.get_embedding_provider",
+        lambda: _FakeEmbeddingProvider(),
+    )
+    monkeypatch.setattr("app.services.repository_ingestion.vector_store.upsert_chunks", _noop_upsert)
+    monkeypatch.setattr(
+        "app.services.repository_ingestion.vector_store.delete_by_repository", _fake_delete
+    )
+    monkeypatch.setattr("app.services.repository_ingestion.AsyncSessionLocal", lambda: db_session)
+
+    await ingest_repository(repository.id)
+
+    # Qdrant was told to drop every vector for this repository before the
+    # fresh scan's vectors (none of which include the stale file) were
+    # upserted - the stale point can't be left behind in Qdrant.
+    assert delete_calls == [repository.id]
+
+    # The stale repository_files row - and, via the real ON DELETE CASCADE
+    # on code_chunks.repository_file_id, its code_chunks row - are both
+    # gone, not just superseded.
+    remaining_files = (
+        await db_session.execute(
+            select(RepositoryFile).where(RepositoryFile.repository_id == repository.id)
+        )
+    ).scalars().all()
+    assert {f.file_path for f in remaining_files} == {"backend/app/main.py"}
+
+    remaining_chunks = (
+        await db_session.execute(select(CodeChunk).where(CodeChunk.repository_id == repository.id))
+    ).scalars().all()
+    assert not any(c.content == "DB_PASSWORD=reallysecret" for c in remaining_chunks)

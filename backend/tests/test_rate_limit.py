@@ -1,13 +1,20 @@
 """Unit/integration tests for app.core.rate_limit (Day 46).
 
-The Redis client is faked with a tiny in-memory INCR/EXPIRE stand-in -
-same "swap the external client, not the logic under test" approach as
-httpx.MockTransport elsewhere in this suite - rather than needing a real
-Redis server, consistent with this whole test suite's "no live network
-access needed" property (see conftest.py's other stubbed externals,
-including this file's own target: rate limiting is disabled by default
-for every *other* test via conftest.py's autouse `_disable_rate_limiting`,
-so these are the tests that explicitly turn it back on).
+Most tests here fake the Redis client with a tiny in-memory EVAL
+stand-in - same "swap the external client, not the logic under test"
+approach as httpx.MockTransport elsewhere in this suite - rather than
+needing a real Redis server, consistent with this whole test suite's "no
+live network access needed" property (see conftest.py's other stubbed
+externals, including this file's own target: rate limiting is disabled
+by default for every *other* test via conftest.py's autouse
+`_disable_rate_limiting`, so these are the tests that explicitly turn it
+back on).
+
+The one deliberate exception is
+`test_real_redis_increments_and_enforces_the_limit` at the bottom of this
+file, which talks to a real Redis instance on purpose - see its own
+docstring for why a fully-mocked suite couldn't have caught the bug it
+guards against.
 """
 
 from __future__ import annotations
@@ -40,26 +47,28 @@ def _reset_circuit_breaker(monkeypatch):
 
 
 class _FakeRedis:
-    """In-memory stand-in exposing just the two calls _check makes."""
+    """In-memory stand-in for the single EVAL call _check makes - mirrors
+    _INCR_AND_EXPIRE_SCRIPT's own INCR-then-conditional-EXPIRE logic so the
+    fake's observable behavior (and the counts/expirations state below)
+    matches what the real Lua script does server-side."""
 
     def __init__(self) -> None:
         self.counts: dict[str, int] = {}
         self.expirations: dict[str, int] = {}
 
-    async def incr(self, key: str) -> int:
+    async def eval(self, script: str, numkeys: int, key: str, window_seconds: int) -> int:
         self.counts[key] = self.counts.get(key, 0) + 1
-        return self.counts[key]
-
-    async def expire(self, key: str, seconds: int) -> bool:
-        self.expirations[key] = seconds
-        return True
+        count = self.counts[key]
+        if count == 1:
+            self.expirations[key] = window_seconds
+        return count
 
 
 class _BrokenRedis:
     """Simulates a genuinely unreachable Redis, same failure mode Day 38
     fixed for Celery - a connection-level error, not a bad response."""
 
-    async def incr(self, key: str) -> int:
+    async def eval(self, script: str, numkeys: int, key: str, window_seconds: int) -> int:
         raise redis.exceptions.ConnectionError("could not connect to Redis")
 
 
@@ -118,6 +127,26 @@ async def test_redis_failure_fails_open_rather_than_crashing(monkeypatch):
     await _check("ai", "user-1")
 
 
+async def test_unexpected_reply_shape_fails_open_rather_than_trusting_it(monkeypatch):
+    # A real INCR-via-EVAL reply is always a positive integer. Anything
+    # else - the exact shape the live silent-no-op bug this replaces
+    # could produce with no exception at all - must fail open the same
+    # way a real connection error does, not be silently treated as "under
+    # the limit" (which a bare `None > limit` or `"" > limit` comparison
+    # would raise a TypeError for anyway, but this guards the case
+    # explicitly rather than relying on that accidental crash).
+    _enable(monkeypatch, limit=1)
+
+    class _NonsenseReplyRedis:
+        async def eval(self, script: str, numkeys: int, key: str, window_seconds: int):
+            return None
+
+    monkeypatch.setattr("app.core.rate_limit._get_client", lambda: _NonsenseReplyRedis())
+
+    await _check("ai", "user-1")  # does not raise RateLimitExceeded or crash
+    await _check("ai", "user-1")  # still fails open - never "saw" a count of 1
+
+
 async def test_circuit_breaker_skips_redis_after_a_recent_failure(monkeypatch):
     # Found live, not by inspection: without this breaker, every single
     # request independently pays the full connection-timeout cost when
@@ -130,7 +159,7 @@ async def test_circuit_breaker_skips_redis_after_a_recent_failure(monkeypatch):
     calls: list[str] = []
 
     class _CountingBrokenRedis:
-        async def incr(self, key: str) -> int:
+        async def eval(self, script: str, numkeys: int, key: str, window_seconds: int) -> int:
             calls.append(key)
             raise redis.exceptions.ConnectionError("could not connect to Redis")
 
@@ -255,3 +284,85 @@ async def test_second_user_is_unaffected_by_first_users_limit_over_http(client, 
         "/repositories", json={"github_url": "owner/repo-b"}, headers=headers_b
     )
     assert still_allowed.status_code == 201
+
+
+# --- Real Redis integration test -------------------------------------------
+#
+# Everything above deliberately fakes the Redis client so the rest of this
+# suite stays fast and network-free. That's exactly why the live QA pass's
+# finding (the previous two-call INCR/EXPIRE could silently do nothing at
+# all against a *real* Redis, with every mocked test above still green)
+# went uncaught: a fake that faithfully implements "INCR means increment"
+# can't detect a real client that doesn't actually do that. This test is
+# the deliberate exception - it skips the `_get_client` monkeypatch
+# entirely and talks to a real Redis instance, so a regression of the same
+# shape (the call succeeds, no exception, but nothing server-side actually
+# changes) fails this test the same way it fooled live testing: the count
+# never reaches the limit, and the final assertions against Redis's own
+# state (not just "did _check raise") catch it directly.
+
+
+async def test_real_redis_increments_and_enforces_the_limit(monkeypatch):
+    from app.core.rate_limit import _get_client
+
+    client = _get_client()
+    # This dev sandbox's Redis (WSL2, localhost-forwarded) is prone to a
+    # brand-new client's *very first* connection attempt timing out even
+    # when Redis is genuinely up and every later call succeeds - a small,
+    # bounded retry here is a test-infrastructure accommodation for that
+    # specific cold-start hiccup, not a retry around the actual rate-limit
+    # logic under test (which makes no retries anywhere).
+    last_exc: Exception | None = None
+    for _attempt in range(3):
+        try:
+            await client.ping()
+            last_exc = None
+            break
+        except Exception as exc:  # pragma: no cover - environment-dependent
+            last_exc = exc
+    if last_exc is not None:
+        pytest.skip(f"No real Redis reachable at {settings.redis_url}: {last_exc}")
+
+    _enable(monkeypatch, limit=3, window=60)
+    identifier = f"real-redis-test-{uuid.uuid4()}"
+    key = f"ratelimit:ai:{identifier}"
+
+    # Isolated key: delete any leftover state before asserting anything,
+    # and always clean up afterward even if an assertion fails.
+    await client.delete(key)
+    try:
+        # 1 & 3: real Redis, isolated key.
+        # 4: the first `limit` calls must all be allowed.
+        for expected_count in range(1, 4):
+            await _check("ai", identifier)  # does not raise
+            # 6: Redis's own counter actually changed after each call -
+            # not just "no exception was raised" but a real, growing,
+            # server-side value.
+            actual = await client.get(key)
+            assert int(actual) == expected_count, (
+                f"expected Redis key {key!r} to read {expected_count} "
+                f"after {expected_count} real requests, got {actual!r}"
+            )
+
+        # 5: the next request, over the limit, must be rejected.
+        with pytest.raises(RateLimitExceeded) as exc_info:
+            await _check("ai", identifier)
+        assert exc_info.value.status_code == 429
+
+        # The rejected call must not have incremented the counter further
+        # in a way that would matter - Redis's INCR runs before the
+        # in-Python `count > limit` check, so this key is now at 4, which
+        # is expected and fine; what matters is every call at or under the
+        # limit succeeded and the very next one was rejected, both
+        # already asserted above.
+        final = await client.get(key)
+        assert int(final) == 4
+
+        # A real TTL was actually set on the key (via the same EVAL that
+        # incremented it), not left to live forever.
+        ttl = await client.ttl(key)
+        assert 0 < ttl <= 60
+    finally:
+        # 7: clean up so this test leaves no residue in a real Redis
+        # instance (this project's own dev/CI Redis, not a disposable one).
+        await client.delete(key)

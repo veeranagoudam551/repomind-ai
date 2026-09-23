@@ -63,6 +63,29 @@ logger = logging.getLogger(__name__)
 _SOCKET_TIMEOUT_SECONDS = 1.0
 _FAILURE_COOLDOWN_SECONDS = 10.0
 
+# INCR the key and, only the first time it's touched in this window, set
+# its expiry - as one atomic server-side round trip instead of two
+# sequential client calls. A live QA pass found the previous two-call
+# version (`client.incr()` then a conditional `client.expire()`) could
+# silently produce no observable effect at all under this project's
+# actual dev environment: no exception raised, no warning logged, and
+# `redis-cli MONITOR` showed neither command ever reaching the server -
+# the exact client-side mechanism was never pinned down, so this isn't a
+# fix for a proven cause. It's a strictly more defensible implementation
+# regardless of that cause: one EVAL is one command dispatched and one reply
+# awaited, instead of two independent opportunities for something to go
+# quiet in between, and its reply is a real integer we can sanity-check
+# below - turning "silently did nothing" into either a raised
+# `redis.RedisError` (already handled) or a loud, logged sanity-check
+# failure (new), never a silent no-op.
+_INCR_AND_EXPIRE_SCRIPT = """
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+"""
+
 _redis_client: Optional[redis.Redis] = None
 _last_failure_at: Optional[float] = None
 
@@ -138,11 +161,26 @@ async def _check(scope: str, identifier: str) -> None:
 
     try:
         client = _get_client()
-        count = await client.incr(key)
-        if count == 1:
-            await client.expire(key, window_seconds)
+        count = await client.eval(_INCR_AND_EXPIRE_SCRIPT, 1, key, window_seconds)
     except redis.RedisError as exc:
         logger.warning("Rate limit check failed for %r (failing open): %s", key, exc)
+        _last_failure_at = time.monotonic()
+        return
+
+    if not isinstance(count, int) or count < 1:
+        # A real INCR reply is always a positive integer. Anything else -
+        # wrong type, zero, None - is the same "the call returned without
+        # actually doing anything" shape the two-call version could
+        # produce with no exception at all. Treat it exactly like a
+        # connection failure (fail open, note it, let the breaker apply)
+        # rather than trusting a value that couldn't have come from a
+        # real INCR.
+        logger.error(
+            "Rate limit check for %r got an unexpected reply from Redis "
+            "(failing open): %r",
+            key,
+            count,
+        )
         _last_failure_at = time.monotonic()
         return
 

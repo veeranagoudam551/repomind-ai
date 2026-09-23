@@ -30,6 +30,19 @@ class Settings(BaseSettings):
     max_file_size_kb: int = 500
     chunk_max_lines: int = 100
     chunk_overlap_lines: int = 15
+    # Qdrant's own score_threshold on /points/search (app/services/
+    # vector_store.py's DISTANCE_METRIC is Cosine similarity - higher is
+    # more relevant, not a distance). A live QA pass's own observed range
+    # against this project's real ingested content and real embedding
+    # model: genuinely relevant queries scored ~0.31-0.39; a deliberately
+    # nonsensical query scored ~0.20-0.22. 0.25 sits with margin on both
+    # sides of that gap, closer to the nonsense ceiling than the relevant
+    # floor - deliberately conservative, since one QA session's sample
+    # isn't a rigorous study: it should reliably exclude the "clearly
+    # nothing matches" case without risking cutting off a real, if
+    # less-than-perfect, match. Below this, Qdrant returns nothing for a
+    # query rather than the nearest neighbors regardless of relevance.
+    search_score_threshold: float = 0.25
     openai_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
     # "openai" | "local" (Day 51) - see app/services/embedding_providers.py.

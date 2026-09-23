@@ -146,6 +146,19 @@ async def search(vector: list[float], repository_id: uuid.UUID, limit: int = 10)
     score first) - the caller joins `payload["code_chunk_id"]` back against
     Postgres for the actual chunk content, since Qdrant only stores enough
     payload to filter and locate a hit, not the content itself.
+
+    `score_threshold` (settings.search_score_threshold, see its own
+    comment for how the default was chosen) is sent on every call, not
+    opt-in per caller - every one of search/chat/debug/the Agent's
+    search_code tool wants "don't call something a match it isn't", not
+    just the standalone Search page, so this applies uniformly without
+    any of them needing to ask for it individually. Qdrant itself drops
+    anything scoring below it before this function ever sees it - a
+    query with nothing that clears the bar comes back as an empty list
+    from here, the same shape an empty collection already produces, so
+    every existing "no results" caller (the Search page's own "No
+    matches found" empty state, the Agent's search_code tool) handles it
+    for free.
     """
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -157,6 +170,7 @@ async def search(vector: list[float], repository_id: uuid.UUID, limit: int = 10)
                         "must": [{"key": "repository_id", "match": {"value": str(repository_id)}}]
                     },
                     "limit": limit,
+                    "score_threshold": settings.search_score_threshold,
                     "with_payload": True,
                 },
             )

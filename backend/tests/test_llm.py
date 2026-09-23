@@ -896,3 +896,336 @@ async def test_generate_response_groq_timeout_stays_plain_api_error(monkeypatch)
     with pytest.raises(LLMAPIError) as exc_info:
         await generate_response("system", "hello")
     assert not isinstance(exc_info.value, LLMRateLimitError)
+
+
+# --- Generic (non-200/429) upstream errors never leak the raw provider ----
+# body. A live QA pass found a real Groq 413 "request too large" response -
+# organization id, billing-upgrade URL, and exact token counts all
+# included - reaching an end user verbatim via `detail=str(exc)`, because
+# only 429 had a dedicated, sanitized message; everything else embedded
+# `response.text` directly. These assert the *content* of the message
+# these providers raise (not just its type, which the tests above already
+# covered) never contains what a raw provider error body would.
+
+_GROQ_413_BODY = (
+    '{"error":{"message":"Request too large for model `openai/gpt-oss-120b` '
+    'in organization `org_EXAMPLEnotarealorgid00000` service tier '
+    '`on_demand` on tokens per minute (TPM): Limit 8000, Requested 19105, '
+    'please reduce your message size and try again. Need more tokens? '
+    'Upgrade to Dev Tier today at https://console.groq.com/settings/billing",'
+    '"type":"tokens","code":"rate_limit_exceeded"}}'
+)
+
+
+def _assert_message_has_no_provider_internals(message: str) -> None:
+    lowered = message.lower()
+    for forbidden in (
+        "org_",
+        "console.groq.com",
+        "billing",
+        "requested",
+        "19105",
+        "8000",
+        "api key",
+        "api_key",
+        "x-api-key",
+        "authorization",
+        "request_id",
+        "req_",
+    ):
+        assert forbidden not in lowered, f"{forbidden!r} leaked into message: {message!r}"
+
+
+async def test_generate_response_groq_413_sanitizes_provider_body(monkeypatch):
+    def handler(request):
+        return httpx.Response(413, text=_GROQ_413_BODY)
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        await generate_response("system", "hello")
+    assert not isinstance(exc_info.value, LLMRateLimitError)
+    message = str(exc_info.value)
+    _assert_message_has_no_provider_internals(message)
+    assert "413" in message  # the bare status code itself is safe to show
+
+
+async def test_generate_with_tools_groq_413_sanitizes_provider_body(monkeypatch):
+    def handler(request):
+        return httpx.Response(413, text=_GROQ_413_BODY)
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        await generate_with_tools("system", [], [_SEARCH_TOOL], 1024)
+    _assert_message_has_no_provider_internals(str(exc_info.value))
+
+
+async def test_generate_response_groq_400_sanitizes_provider_body(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            400,
+            text='{"error": {"message": "invalid request", "code": "invalid_request_error", '
+            '"request_id": "req_abc123"}}',
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        await generate_response("system", "hello")
+    _assert_message_has_no_provider_internals(str(exc_info.value))
+
+
+async def test_generate_response_groq_500_sanitizes_provider_body(monkeypatch):
+    def handler(request):
+        return httpx.Response(500, text="internal server error, org_secret_trace_id=xyz")
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        await generate_response("system", "hello")
+    _assert_message_has_no_provider_internals(str(exc_info.value))
+
+
+async def test_generate_with_tools_groq_tool_choice_violation_message_is_sanitized(monkeypatch):
+    # The narrower LLMToolChoiceViolationError subclass is detected from
+    # the raw body (unchanged), but the message it carries onward must be
+    # just as safe as the generic fallback - on a non-forced-finish turn
+    # this exception is *not* absorbed internally and reaches the client
+    # (see agent.py's own `if not forced_finish: raise`).
+    def handler(request):
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "message": "Tool choice is none, but model called a tool",
+                    "type": "invalid_request_error",
+                    "code": "tool_use_failed",
+                    "failed_generation": '{"name": "search_code", "arguments": {"query": "org_shouldnotleak secret"}}',
+                }
+            },
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMToolChoiceViolationError) as exc_info:
+        await generate_with_tools("system", [], [_SEARCH_TOOL], 1024, tool_choice="none")
+    message = str(exc_info.value)
+    assert "failed_generation" not in message
+    assert "org_shouldnotleak" not in message
+    _assert_message_has_no_provider_internals(message)
+
+
+async def test_generate_response_anthropic_400_sanitizes_provider_body(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            400, text='{"type": "error", "error": {"message": "invalid api key", "request_id": "req_xyz"}}'
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "anthropic")
+    monkeypatch.setattr("app.services.llm.settings.anthropic_api_key", "sk-ant-test")
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        await generate_response("system", "hello")
+    assert not isinstance(exc_info.value, LLMRateLimitError)
+    _assert_message_has_no_provider_internals(str(exc_info.value))
+
+
+async def test_generate_with_tools_anthropic_error_sanitizes_provider_body(monkeypatch):
+    def handler(request):
+        return httpx.Response(401, text='{"error": "invalid api key", "request_id": "req_abc"}')
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "anthropic")
+    monkeypatch.setattr("app.services.llm.settings.anthropic_api_key", "sk-ant-bad")
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        await generate_with_tools("system", [], [_SEARCH_TOOL], 1024)
+    _assert_message_has_no_provider_internals(str(exc_info.value))
+
+
+async def test_generate_with_tools_anthropic_500_sanitizes_provider_body(monkeypatch):
+    def handler(request):
+        return httpx.Response(500, text='{"error": {"message": "overloaded", "request_id": "req_999"}}')
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "anthropic")
+    monkeypatch.setattr("app.services.llm.settings.anthropic_api_key", "sk-ant-test")
+
+    with pytest.raises(LLMAPIError) as exc_info:
+        await generate_with_tools("system", [], [_SEARCH_TOOL], 1024)
+    _assert_message_has_no_provider_internals(str(exc_info.value))
+
+
+async def test_generate_response_groq_429_message_unaffected_by_sanitization(monkeypatch):
+    # Regression guard: the dedicated 429 path (already-approved, Phase 1
+    # of this stabilization work) must keep working exactly as before -
+    # this change only touches the generic non-200/429 fallback.
+    def handler(request):
+        return httpx.Response(429, headers={"retry-after": "5"}, text=_GROQ_413_BODY)
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    with pytest.raises(LLMRateLimitError) as exc_info:
+        await generate_response("system", "hello")
+    assert "5s" in str(exc_info.value)
+    _assert_message_has_no_provider_internals(str(exc_info.value))
+
+
+# --- GPT-OSS reasoning_effort - Groq's reasoning family can spend its ----
+# whole max_tokens budget on an internal `message.reasoning` field before
+# emitting anything into `message.content`, returning a real 200 with an
+# empty answer. reasoning_effort="low" is sent for models identified as
+# this family, never for others, and never for Anthropic.
+
+
+def _groq_gpt_oss_response(content: str, reasoning: str, finish_reason: str = "stop") -> dict:
+    return {
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": content, "reasoning": reasoning},
+                "finish_reason": finish_reason,
+            }
+        ],
+        "model": "openai/gpt-oss-120b",
+        "usage": {"completion_tokens": 1024, "completion_tokens_details": {"reasoning_tokens": 900}},
+    }
+
+
+async def test_generate_response_groq_sends_reasoning_effort_for_gpt_oss_model(monkeypatch):
+    def handler(request):
+        payload = json.loads(request.content)
+        assert payload["reasoning_effort"] == "low"
+        return httpx.Response(200, json=_groq_response("a real answer"))
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+    monkeypatch.setattr("app.services.llm.settings.groq_model", "openai/gpt-oss-120b")
+
+    answer = await generate_response("system", "hello")
+    assert answer == "a real answer"
+
+
+async def test_generate_response_groq_omits_reasoning_effort_for_non_reasoning_model(monkeypatch):
+    # GROQ_MODEL is operator-configurable (app/core/config.py) - a model
+    # outside the gpt-oss family was never tested against this parameter
+    # and may reject or ignore it, so it must never be sent.
+    def handler(request):
+        payload = json.loads(request.content)
+        assert "reasoning_effort" not in payload
+        return httpx.Response(200, json=_groq_response("a real answer"))
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+    monkeypatch.setattr("app.services.llm.settings.groq_model", "llama-3.3-70b-versatile")
+
+    await generate_response("system", "hello")
+
+
+async def test_generate_response_groq_empty_content_with_reasoning_field_returns_empty_string(
+    monkeypatch,
+):
+    # The problematic shape a live QA pass reproduced: a real 200, real
+    # substantial `reasoning`, but empty `content` and
+    # finish_reason="length" (the whole max_tokens budget went to
+    # reasoning). This locks in the deliberate decision *not* to fall
+    # back to `reasoning` as if it were the answer - it's the model's own
+    # internal scratch space, not a finished, user-facing response, so
+    # this still returns exactly what `content` says: empty. The
+    # reasoning_effort="low" parameter (tested separately above) is this
+    # phase's actual mitigation for reducing how often this shape occurs;
+    # this test documents the response-parsing behavior on its own,
+    # independent of whether that mitigation is sent.
+    def handler(request):
+        return httpx.Response(
+            200,
+            json=_groq_gpt_oss_response(
+                content="",
+                reasoning="We need to produce a code review... [truncated by length]",
+                finish_reason="length",
+            ),
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    answer = await generate_response("system", "hello")
+    assert answer == ""
+
+
+async def test_generate_response_groq_normal_gpt_oss_response_returns_content(monkeypatch):
+    # The other half of the same shape: reasoning present but small, and
+    # content real and substantial - confirms normal responses are
+    # unaffected by this change.
+    def handler(request):
+        return httpx.Response(
+            200,
+            json=_groq_gpt_oss_response(
+                content="## Code Review\n\nThis file looks clean overall...",
+                reasoning="Quick scan, nothing concerning.",
+                finish_reason="stop",
+            ),
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+
+    answer = await generate_response("system", "hello")
+    assert answer == "## Code Review\n\nThis file looks clean overall..."
+
+
+async def test_generate_with_tools_groq_does_not_send_reasoning_effort(monkeypatch):
+    # Deliberately out of this phase's scope: generate_with_tools() is the
+    # Agent's own planner call, which already has its own graceful
+    # fallback for an empty/unusable turn (agent.py) - this documents
+    # that the reasoning_effort mitigation was not extended there.
+    def handler(request):
+        payload = json.loads(request.content)
+        assert "reasoning_effort" not in payload
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "groq")
+    monkeypatch.setattr("app.services.llm.settings.groq_api_key", "gsk-test")
+    monkeypatch.setattr("app.services.llm.settings.groq_model", "openai/gpt-oss-120b")
+
+    await generate_with_tools("system", [], [_SEARCH_TOOL], 1024)
+
+
+async def test_generate_response_anthropic_never_receives_reasoning_effort_parameter(monkeypatch):
+    # Anthropic has no such parameter - even with a Groq-reasoning-model
+    # name sitting in GROQ_MODEL (irrelevant while LLM_PROVIDER=anthropic,
+    # but proves this is gated on the active provider, not just the
+    # string value of an unrelated setting).
+    def handler(request):
+        payload = json.loads(request.content)
+        assert "reasoning_effort" not in payload
+        return httpx.Response(200, json=_anthropic_response("hi there"))
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("app.services.llm.settings.llm_provider", "anthropic")
+    monkeypatch.setattr("app.services.llm.settings.anthropic_api_key", "sk-ant-test")
+    monkeypatch.setattr("app.services.llm.settings.groq_model", "openai/gpt-oss-120b")
+
+    answer = await generate_response("system", "hello")
+    assert answer == "hi there"

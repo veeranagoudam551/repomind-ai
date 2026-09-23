@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import shutil
 import tarfile
 import tempfile
@@ -69,6 +70,73 @@ EXCLUDED_DIR_NAMES = {
     ".cache",
     "egg-info",
 }
+
+# Filenames that are never useful for code intelligence and risk indexing
+# real credentials if ingested - a live QA pass found a real `.env` from
+# a real GitHub repository chunked, embedded, and made searchable via
+# chat/search/explain. Checked against just the basename (`os.walk`'s own
+# `filenames` are always bare names, never containing a path separator on
+# either platform, so no Windows/Linux path-separator normalization is
+# needed here - unlike `_scan_files`'s own `rel_path`, which already
+# normalizes to "/" a few lines below for the *stored* value). This is a
+# deliberately narrow, filename-pattern-based denylist - not a
+# `.gitignore` parser and not a content scanner (that's
+# security_scan.py's own, different job, over content that already made
+# it into the database) - checked before a file's size is even read,
+# the same "skip before touching it at all" point EXCLUDED_DIR_NAMES
+# above already uses for directories.
+#
+# Deliberately NOT excluded: `.env.example` / `.env.sample` /
+# `.env.template` - the common convention for a placeholder, secret-free
+# configuration template meant to be read (including by this app's own
+# users asking "how do I configure this repo?"), not a real secret file
+# that happens to share the `.env` prefix. Also deliberately NOT "every
+# `.json` file" or "every config file" - `package.json`, `tsconfig.json`,
+# `application.yml`, `config.py`, `settings.py`, etc. all stay indexed;
+# only the exact, well-known credential filenames/patterns below do.
+EXCLUDED_FILENAMES = {
+    ".env",
+    ".npmrc",
+    ".pypirc",
+    "credentials.json",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+}
+
+# Suffix-based rules the exact-name set above can't express - a
+# repository can have any number of differently-named `*.pem`/`*.key`
+# files (a real private key's filename isn't standardized the way
+# `id_rsa` is).
+EXCLUDED_FILENAME_SUFFIXES = (".pem", ".key")
+
+# `.env.<anything>` is excluded except the documented placeholder/
+# template names above (bare `.env` itself is already covered by
+# EXCLUDED_FILENAMES).
+_ENV_TEMPLATE_FILENAMES = {".env.example", ".env.sample", ".env.template"}
+
+# Matches the common "this file's whole purpose is naming a downloaded
+# service-account credential" convention (Google Cloud's own default
+# download name, and the general "<anything>-service-account.json" /
+# "serviceAccountKey.json" pattern other tooling follows) - not "every
+# JSON file", per this phase's explicit instruction not to blindly
+# exclude JSON/config files.
+_SERVICE_ACCOUNT_FILENAME_PATTERN = re.compile(r"^.*service[-_]?account.*\.json$", re.IGNORECASE)
+
+
+def _is_excluded_filename(filename: str) -> bool:
+    lowered = filename.lower()
+
+    if lowered in EXCLUDED_FILENAMES:
+        return True
+    if lowered.endswith(EXCLUDED_FILENAME_SUFFIXES):
+        return True
+    if lowered.startswith(".env.") and lowered not in _ENV_TEMPLATE_FILENAMES:
+        return True
+    if _SERVICE_ACCOUNT_FILENAME_PATTERN.match(lowered):
+        return True
+    return False
+
 
 LANGUAGE_BY_EXTENSION = {
     ".py": "python",
@@ -192,6 +260,9 @@ def _scan_files(root_dir: str) -> list[dict]:
         dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIR_NAMES]
 
         for filename in filenames:
+            if _is_excluded_filename(filename):
+                continue
+
             abs_path = os.path.join(current_dir, filename)
             try:
                 size_bytes = os.path.getsize(abs_path)
