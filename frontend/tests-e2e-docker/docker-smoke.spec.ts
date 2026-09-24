@@ -2,9 +2,11 @@ import { test, expect, type Page } from "@playwright/test";
 import { uniqueEmail } from "../tests-e2e/helpers";
 
 // Production-like smoke test for the full Docker Compose stack (Day 55) -
-// proves a real browser can drive the actual containerized frontend,
-// which in turn talks to the actual containerized FastAPI backend and
-// Postgres/Redis, over the same published ports CI's docker-smoke job
+// proves a real browser can drive the actual containerized frontend
+// (reached through Caddy, the stack's only published port since the
+// deployment-hardening pass - see playwright.docker.config.ts), which in
+// turn talks to the actual containerized FastAPI backend and
+// Postgres/Redis, over the same internal network CI's docker-smoke job
 // already waits healthy for. Deliberately a single, small test, not a
 // second copy of tests-e2e/'s full suite - see playwright.docker.config.ts
 // for how this is kept isolated from that regular suite.

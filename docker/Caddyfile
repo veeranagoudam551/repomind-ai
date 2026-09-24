@@ -1,0 +1,58 @@
+# RepoMind AI - Caddy reverse proxy / TLS termination config.
+#
+# The single public entry point for the whole stack (docker-compose.yml's
+# `caddy` service is the only one publishing host ports - 80/443). Every
+# other service (frontend, api, postgres, redis, qdrant) is reachable only
+# over the Docker-internal `edge`/`internal` networks, never from the host
+# or the public internet directly.
+#
+# Routing strategy: inspected the actual frontend/backend code before
+# choosing this (see docs/architecture.md and the deployment audit this
+# implements) -
+#   - The Next.js frontend never calls the backend from browser JS at all:
+#     every API call happens server-side (Server Components/Server
+#     Actions, frontend/src/lib/api.ts's own header comment - "Only call
+#     this from Server Components and Server Actions - never from the
+#     browser bundle"), reaching `api:8000` directly over the `edge`
+#     Docker network. The browser therefore never needs to know the API's
+#     URL at all for the app to function.
+#   - A public /api/* route is still wired up below anyway (stripping the
+#     /api prefix before forwarding - none of FastAPI's real routes
+#     start with /api, e.g. /auth/*, /repositories/*, /health, so this
+#     doesn't collide with anything and needed no backend route changes)
+#     purely so the real API is directly reachable over HTTPS too - e.g.
+#     for manual testing, the OpenAPI docs, or a future feature that does
+#     call it from the browser. It is not currently exercised by any
+#     browser code path.
+#
+# Domain: never hardcoded. {$PRODUCTION_DOMAIN} is substituted from the
+# environment (see .env.example's PRODUCTION_DOMAIN placeholder and
+# docker-compose.yml's `caddy` service). Caddy's automatic HTTPS then:
+#   - issues a real Let's Encrypt (ACME) certificate for any real public
+#     domain name - the normal, intended production case;
+#   - falls back to Caddy's own internal, non-public local CA only for
+#     domains it recognizes as non-public (e.g. "localhost", a bare IP) -
+#     this is Caddy's own built-in local-development HTTPS feature, not a
+#     manually-created self-signed cert, and only ever applies when
+#     PRODUCTION_DOMAIN is deliberately set to a local value for testing.
+# HTTP (port 80) is never left open as plain HTTP for the real site -
+# Caddy redirects it to HTTPS automatically as part of its default
+# automatic-HTTPS behavior for any site block that isn't itself an
+# `http://` address.
+{$PRODUCTION_DOMAIN} {
+	# Backend API - only the /api/* path, prefix stripped before forwarding.
+	handle_path /api/* {
+		reverse_proxy api:8000 {
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Everything else - the Next.js frontend.
+	handle {
+		reverse_proxy frontend:3000 {
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	encode gzip
+}

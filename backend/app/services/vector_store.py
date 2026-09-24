@@ -49,6 +49,15 @@ def _base_url() -> str:
     return f"http://{settings.qdrant_host}:{settings.qdrant_port}"
 
 
+def _headers() -> dict[str, str]:
+    # Qdrant's own REST auth header, sent only when actually configured
+    # (settings.qdrant_api_key) - every local/CI environment leaves this
+    # empty and talks to an unauthenticated Qdrant exactly as before.
+    if settings.qdrant_api_key:
+        return {"api-key": settings.qdrant_api_key}
+    return {}
+
+
 def _collection_name() -> str:
     suffix = _PROVIDER_COLLECTION_SUFFIXES.get(settings.embedding_provider, f"_{settings.embedding_provider}")
     return f"{settings.qdrant_collection_name}{suffix}"
@@ -80,7 +89,7 @@ async def ensure_collection(vector_size: int) -> None:
     dimension-mismatched upsert fail with a raw Qdrant error later.
     """
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, headers=_headers()) as client:
             response = await client.get(_collection_url())
             if response.status_code == 200:
                 existing_size = _existing_vector_size(response.json())
@@ -125,7 +134,7 @@ async def upsert_chunks(points: list[dict]) -> None:
     await ensure_collection(len(points[0]["vector"]))
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, headers=_headers()) as client:
             response = await client.put(
                 f"{_collection_url()}/points",
                 params={"wait": "true"},
@@ -161,7 +170,7 @@ async def search(vector: list[float], repository_id: uuid.UUID, limit: int = 10)
     for free.
     """
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=10.0, headers=_headers()) as client:
             response = await client.post(
                 f"{_collection_url()}/points/search",
                 json={
@@ -192,7 +201,7 @@ async def delete_by_repository(repository_id: uuid.UUID) -> None:
     nothing to delete for a repository that was never successfully embedded.
     """
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, headers=_headers()) as client:
             response = await client.post(
                 f"{_collection_url()}/points/delete",
                 params={"wait": "true"},

@@ -331,6 +331,24 @@ jobs:
       # default, since nothing here sets EMBEDDING_PROVIDER at all), not
       # the ~150MB heavier local-embedding image.
       BACKEND_DOCKER_TARGET: production
+      # REDIS_PASSWORD/QDRANT_API_KEY deliberately left unset (deployment-
+      # hardening pass) - same reasoning as OPENAI_API_KEY/ANTHROPIC_API_KEY
+      # above: this job proves the stack starts and talks to itself, not
+      # every hardening feature at once, and both default to today's
+      # unauthenticated local-dev-equivalent behavior when unset (see
+      # docker/docker-compose.yml's own comments on both).
+      #
+      # A bare port, not a hostname (deployment-hardening pass) - Caddy
+      # (docker/Caddyfile) treats this as "serve plain HTTP here, skip
+      # automatic HTTPS entirely" for exactly this site block, which is
+      # the correct choice for CI: there is no real public domain/DNS for
+      # ACME to work against here, and Caddy's own local-only internal-CA
+      # HTTPS fallback (what a bare "localhost" would trigger instead)
+      # would need a cert Playwright/curl don't trust by default. Neither
+      # a real domain nor a faked certificate - Caddy's own documented
+      # opt-out of automatic HTTPS for a site address that isn't a
+      # hostname.
+      PRODUCTION_DOMAIN: ":80"
     steps:
       - uses: actions/checkout@v4
 
@@ -341,9 +359,9 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       # `--wait` blocks until every service with a healthcheck reports
-      # healthy - postgres, redis, api, celery-worker, frontend - or, for
-      # qdrant (no healthcheck by design, see docker-compose.yml's own
-      # comment), simply running; a fixed sleep would either be too
+      # healthy - postgres, redis, api, celery-worker, frontend, caddy -
+      # or, for qdrant (no healthcheck by design, see docker-compose.yml's
+      # own comment), simply running; a fixed sleep would either be too
       # short (flaky) or too long (wasted CI time) for no reason.
       # Bounded by --wait-timeout rather than left to hang indefinitely
       # if a container never becomes healthy.
@@ -362,11 +380,21 @@ jobs:
       # ingestion, search, chat, debug, or the agent - only three plain
       # GET requests - so no OpenAI/Anthropic call happens anywhere in
       # this job.
-      - name: Run smoke_check.py against the running stack
+      #
+      # Through Caddy on :80, not the old published :3000/:8000
+      # (deployment-hardening pass) - frontend/api no longer publish host
+      # ports at all (docker/docker-compose.yml's own top-of-file
+      # comment), so Caddy (PRODUCTION_DOMAIN=":80" above, plain HTTP for
+      # this job) is the only thing on the runner's localhost that can
+      # reach them now. --api-url points at Caddy's /api/* route
+      # (docker/Caddyfile - the prefix is stripped before reaching the
+      # real backend), not api:8000 directly - smoke_check.py's own
+      # `.rstrip("/") + "/health"` appends correctly onto that path.
+      - name: Run smoke_check.py against the running stack (through Caddy)
         run: |
           python3 scripts/smoke_check.py \
-            --frontend-url http://localhost:3000 \
-            --api-url http://localhost:8000 \
+            --frontend-url http://localhost \
+            --api-url http://localhost/api \
             --timeout 10
 
       - name: Install frontend dependencies
@@ -379,7 +407,8 @@ jobs:
 
       # A real browser (running on this runner, not inside any container -
       # see playwright.docker.config.ts) driving the actual containerized
-      # frontend on its published port, which in turn talks to the actual
+      # frontend through Caddy (the stack's only published port -
+      # deployment-hardening pass), which in turn talks to the actual
       # containerized FastAPI/Postgres/Redis - the one thing the plain GET
       # requests above can't prove: that a full user-facing flow (register,
       # add a repository, view it, log out) works through the real
@@ -408,7 +437,7 @@ jobs:
         if: always()
         run: |
           docker compose -f docker/docker-compose.yml --profile full logs \
-            --no-color --tail=100 postgres redis api celery-worker frontend
+            --no-color --tail=100 postgres redis qdrant api celery-worker frontend caddy
 
       # Runs even if an earlier step failed, so a broken stack never
       # lingers on the runner. `-v` (also removing the named volumes) is

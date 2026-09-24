@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     qdrant_collection_name: str = "repomind_code_chunks"
+    # Optional - only set once Qdrant is actually configured to require it
+    # (QDRANT__SERVICE__API_KEY on the Qdrant container itself, production
+    # deployment hardening). Empty means "no api-key header sent", matching
+    # every existing local/CI environment where Qdrant has no auth at all.
+    qdrant_api_key: str = ""
     # "anthropic" | "groq" - see app/services/llm.py. anthropic_api_key/
     # anthropic_model are only read when this is "anthropic"; groq_api_key/
     # groq_model only when this is "groq".

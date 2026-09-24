@@ -16,11 +16,11 @@
 #   docker compose -f docker/docker-compose.yml --profile full up -d
 #     The complete production-style stack: the three infra services
 #     above, plus api (FastAPI, gunicorn-free multi-worker uvicorn),
-#     celery-worker (the same image as api, different command), and
-#     frontend (Next.js standalone). This is what "production
-#     deployment" means for this project without a specific cloud
-#     target chosen - see README's "Production deployment" section for
-#     what each service actually needs.
+#     celery-worker (the same image as api, different command),
+#     frontend (Next.js standalone), and caddy - the reverse proxy/TLS
+#     layer and the *only* service that publishes a host port. See
+#     "Production deployment hardening" below and the root README's
+#     "Production deployment" section for what each service needs.
 #
 #   docker compose -f docker/docker-compose.yml down            # stop
 #   docker compose -f docker/docker-compose.yml down -v          # stop + delete all local data
@@ -43,18 +43,51 @@
 # does NOT reuse that value - see the frontend service's own `build.args`
 # comment below for why reusing it was a real bug, and
 # COMPOSE_FRONTEND_API_BASE_URL for the (normally unnecessary) override.
-
-# Shared by api and celery-worker (same image, same config, different
-# command) - a YAML anchor instead of duplicating twelve env vars in two
-# places and letting them drift out of sync. `x-` prefixed top-level keys
-# are a Compose "extension field": ignored by Compose itself except as
-# an anchor/alias source.
+#
+# --- Production deployment hardening ---
+#
+# Caddy is now the *only* service publishing a host port (80/443).
+# Postgres/Redis/Qdrant/api/frontend all lost their host `ports:` -
+# they're reachable only over the two Docker-internal networks below,
+# never from the host or the public internet directly. This closes the
+# exact gap a deployment-readiness audit of this project found: every
+# one of those five services was previously bound to 0.0.0.0 on the
+# host, Redis/Qdrant had no authentication at all, and nothing sat in
+# front of the stack to terminate TLS. See docker/Caddyfile for the
+# reverse-proxy/routing side of this.
+#
+# Two networks, not one, so the split is structural rather than just
+# documented in a comment: `edge` is what Caddy/frontend/api share (the
+# public-facing path); `internal` is what api/celery-worker/postgres/
+# redis/qdrant share (the data-plane path). `api` is the one service on
+# both, by design - it's the only thing in this stack that legitimately
+# needs to be reached from the edge *and* reach the data plane. Postgres/
+# Redis/Qdrant are never on `edge` at all - frontend has no code path
+# that calls them directly (every API call it makes is server-side, to
+# `api:8000`, over `edge` - see docker/Caddyfile's own routing comment),
+# so there's no reason for it to be able to reach them, defense in depth
+# on top of the host-port removal above.
 x-backend-env: &backend-env
   ENVIRONMENT: ${ENVIRONMENT:-production}
   DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-repomind}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-repomind}
-  REDIS_URL: redis://redis:6379/0
+  # Redis auth (production hardening): REDIS_PASSWORD is empty by default
+  # (.env.example), which renders this as `redis://:@redis:6379/0` - both
+  # redis-py and Celery's kombu transport treat an empty password as "no
+  # AUTH sent", so infra-only/local-dev Redis (no --requirepass set below
+  # either, same variable) keeps working with zero required setup. Set a
+  # real REDIS_PASSWORD in your deployment .env to actually enable auth on
+  # both ends together - see the `redis` service below.
+  REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
   QDRANT_HOST: qdrant
   QDRANT_PORT: 6333
+  # Qdrant auth (production hardening): empty by default, matching
+  # REDIS_PASSWORD's reasoning above - app/services/vector_store.py only
+  # sends the `api-key` header when this is actually set (Day: deployment
+  # hardening), and the `qdrant` service below only requires one when its
+  # own QDRANT_API_KEY is set. Both must be set together in a real
+  # deployment; leaving both empty preserves today's unauthenticated local
+  # Qdrant exactly as-is.
+  QDRANT_API_KEY: ${QDRANT_API_KEY:-}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
   # LLM_PROVIDER/GROQ_MODEL have safe defaults, same as ENVIRONMENT/
   # CORS_ORIGINS above - app/core/config.py's own class defaults
@@ -63,6 +96,20 @@ x-backend-env: &backend-env
   # default to unconfigured.
   LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
   GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+  # Only api's docker-entrypoint.sh actually reads this (celery-worker
+  # overrides the entrypoint/command entirely and never runs uvicorn) -
+  # kept in this shared anchor anyway, not a per-service override, purely
+  # so api and celery-worker's rendered `environment:` blocks stay
+  # identical (this project's own tests/test_docker_compose_config.py
+  # asserts that equality directly). A subnet, not a single container IP:
+  # `edge` below is the only network `api` shares with anything that
+  # could send it a request at all now that its host port is gone, and a
+  # network's subnet is stable across container recreations (unlike an
+  # individual container's IP, which can change) - Caddy is the only real
+  # sender of forwarded headers in that subnet, everything else on it
+  # (frontend) has no code path that would send a request to `api` with a
+  # spoofed X-Forwarded-* header in the first place.
+  FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.28.5.0/24}
   # No fallback for these five - real secrets, not local-dev conveniences.
   # An unset JWT_SECRET_KEY resolves to an empty string here (Compose's
   # ${VAR} with no :-default), which app/core/config.py's startup guard
@@ -82,8 +129,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-repomind}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
       POSTGRES_DB: ${POSTGRES_DB:-repomind}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+    # No host `ports:` (production hardening) - only `api`/`celery-worker`
+    # ever need to reach this, both over the `internal` network below by
+    # its service name (`postgres`), never from the host. Local native/WSL
+    # development that wants a host-reachable Postgres uses Option B
+    # (README's "Local infrastructure") instead of this Compose file.
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -91,36 +141,75 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - internal
 
   redis:
     image: redis:7-alpine
     container_name: repomind-redis
     restart: unless-stopped
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
+    environment:
+      # Read by the shell wrapper in `command:` below and by the
+      # healthcheck - a real container env var, not just a host-side
+      # Compose substitution, so both can reference it at container
+      # runtime without baking the value into the rendered YAML twice.
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    # Exec-array `sh -c` + `exec` (not the bare image default command) -
+    # `--requirepass` needs the env var expanded at container runtime,
+    # which plain exec-array form can't do; `exec` still hands PID 1 to
+    # redis-server itself afterward, same reasoning as
+    # backend/docker-entrypoint.sh's own use of `exec`. An empty
+    # REDIS_PASSWORD renders as `--requirepass ""`, which is Redis's own
+    # documented way to mean "no password required" - local/CI dev with
+    # no REDIS_PASSWORD set keeps working exactly as before.
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    # No host `ports:` (production hardening) - see postgres's own
+    # comment above; same reasoning.
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # Tries authenticated first, falls back to a plain ping - correct
+      # whether or not REDIS_PASSWORD is actually set, without the
+      # healthcheck itself needing to know which case it's in. `-a ""`
+      # against a server with no password configured fails fast (Redis's
+      # own "AUTH but no password is set" error) and falls through to the
+      # plain `ping`, which succeeds - so this is accurate in both states,
+      # not just the authenticated one.
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping || redis-cli ping"]
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - internal
 
   qdrant:
     image: qdrant/qdrant:latest
     container_name: repomind-qdrant
     restart: unless-stopped
-    ports:
-      - "${QDRANT_PORT:-6333}:6333"
-      - "6334:6334"
+    environment:
+      # Qdrant's own env-var-as-config convention (double underscore =
+      # nested YAML config key: service.api_key). Empty disables auth
+      # entirely - Qdrant's documented behavior, matching every other
+      # optional-auth default in this file. Set together with the
+      # backend env's QDRANT_API_KEY above in a real deployment.
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    # No host `ports:` (production hardening) - neither 6333 (REST, what
+    # app/services/vector_store.py actually uses) nor 6334 (gRPC, unused
+    # by this codebase entirely) are published anymore. Only
+    # `api`/`celery-worker` reach this, over `internal`, by service name.
     volumes:
       - qdrant_data:/qdrant/storage
     # No healthcheck here: Qdrant's official image is a minimal Debian
     # slim base with no guaranteed shell tools (no bash, no wget/curl),
     # so there's nothing reliable to probe with from inside the
-    # container without adding one. `docker compose ps` will still show
-    # it as "running"; check readiness from the host instead, e.g.
-    # `curl http://localhost:6333/collections`.
+    # container. `docker compose ps` will still show it as "running";
+    # check readiness from another container on `internal` instead, e.g.
+    # `docker compose exec api python -c "..."` against
+    # http://qdrant:6333/collections - there is no longer a host-published
+    # port to `curl` directly (see the root README's own troubleshooting
+    # note, updated alongside this hardening pass).
+    networks:
+      - internal
 
   # --- Everything below is the "full" profile (Day 47) ---
 
@@ -139,8 +228,10 @@ services:
     restart: unless-stopped
     environment:
       <<: *backend-env
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
+    # No host `ports:` (production hardening) - reachable only from
+    # Caddy (over `edge`) and, server-side, from `frontend` (also over
+    # `edge` - see docker/Caddyfile's own routing comment for why the
+    # frontend never needs Caddy in between for its own API calls).
     depends_on:
       postgres:
         condition: service_healthy
@@ -161,7 +252,9 @@ services:
       # rather than relying only on Docker's outer `timeout: 5s` below to
       # kill a stuck process - bounded from the inside too, consistent
       # with the rest of this project's "don't trust an unconfigured
-      # client timeout" pattern.
+      # client timeout" pattern. Runs against `localhost:8000` from
+      # *inside* the api container itself, so removing the host port
+      # publish above has no effect on this healthcheck at all.
       test:
         [
           "CMD",
@@ -173,6 +266,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    networks:
+      - edge
+      - internal
 
   celery-worker:
     profiles: ["full"]
@@ -191,6 +287,16 @@ services:
     # prefork pool works as-is inside the container (same reasoning Day
     # 44's CI already established for the worker it starts).
     #
+    # --concurrency=1 (production hardening): the prefork pool otherwise
+    # defaults to os.cpu_count() worker processes, each capable of holding
+    # a full copy of the app's imports (and, if EMBEDDING_PROVIDER=local,
+    # the ONNX model) in memory - unpredictable and potentially excessive
+    # on a resource-constrained target VM (Oracle Ampere A1 Free Tier).
+    # Ingestion here is a background, one-at-a-time-per-repository
+    # workload, not a high-throughput queue - one worker process is
+    # sufficient for that, and explicit rather than relying on however
+    # many cores happen to be available.
+    #
     # Exec-array form, not a plain string (Day 47's review): a plain
     # string is run via `sh -c "..."`, leaving celery as a child of that
     # shell rather than PID 1 - correct SIGTERM handling would then
@@ -198,7 +304,7 @@ services:
     # rather than being guaranteed, the same reason docker-entrypoint.sh
     # uses `exec` explicitly instead of relying on it implicitly.
     entrypoint: []
-    command: ["celery", "-A", "app.core.celery_app", "worker", "--loglevel=info"]
+    command: ["celery", "-A", "app.core.celery_app", "worker", "--loglevel=info", "--concurrency=1"]
     environment:
       <<: *backend-env
     depends_on:
@@ -214,6 +320,8 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
+    networks:
+      - internal
 
   frontend:
     profiles: ["full"]
@@ -239,11 +347,22 @@ services:
         # service name, correctly reachable from inside this container;
         # set it only if the full profile's frontend needs to reach some
         # other backend URL entirely (e.g. a real public domain).
+        #
+        # Still correct after the Caddy hardening pass, unchanged: this
+        # value is only ever read server-side (frontend/src/lib/api.ts's
+        # own header comment - "never from the browser bundle"), so it
+        # stays the fast, private, Docker-internal URL rather than
+        # round-tripping every server-side API call through Caddy for no
+        # benefit. The browser itself never sees or uses this value at
+        # all - it only ever talks to the frontend, over HTTPS via Caddy.
         NEXT_PUBLIC_API_BASE_URL: ${COMPOSE_FRONTEND_API_BASE_URL:-http://api:8000}
     container_name: repomind-frontend
     restart: unless-stopped
-    ports:
-      - "3000:3000"
+    # No host `ports:` (production hardening) - reachable only from Caddy,
+    # over `edge`. No runtime `environment:` block here either (never
+    # was) - NEXT_PUBLIC_API_BASE_URL above is a build arg, baked into the
+    # compiled output; adding it here at runtime would wrongly imply
+    # changing it after the image is built has any effect.
     depends_on:
       api:
         condition: service_healthy
@@ -259,6 +378,59 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    networks:
+      - edge
+
+  caddy:
+    profiles: ["full"]
+    image: caddy:2-alpine
+    container_name: repomind-caddy
+    restart: unless-stopped
+    environment:
+      # Never hardcoded - see docker/Caddyfile's own comment for exactly
+      # what this controls (real ACME/Let's Encrypt for a real public
+      # domain; Caddy's own local-only internal CA for a non-public value
+      # like "localhost", used only for local testing of the reverse-proxy
+      # routing itself, never a substitute for real TLS).
+      PRODUCTION_DOMAIN: ${PRODUCTION_DOMAIN:-localhost}
+    ports:
+      # The *only* service in this file that publishes a host port -
+      # every other service's host `ports:` was removed as part of this
+      # same hardening pass (see this file's own top-of-file comment).
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Named volumes (Day: deployment hardening), not anonymous/bind
+      # mounts - /data holds Caddy's own ACME account key and issued
+      # certificates, /config its auto-persisted runtime config. Both
+      # must survive `docker compose down`/container recreation (without
+      # `-v`) exactly like postgres_data/redis_data/qdrant_data already
+      # do, or every recreation would re-trigger a fresh ACME issuance
+      # (and, at Let's Encrypt's real-world rate limits, that's not just
+      # slow - it can get a domain temporarily rate-limited).
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      # caddy:2-alpine is Alpine-based - busybox `wget` is present by
+      # default (no extra install), unlike Qdrant's own slim-Debian image
+      # above which genuinely has nothing to probe with. Probes the site
+      # itself on port 80 rather than the admin API (2019, not exposed
+      # here) - a real proof Caddy is actually serving, not just that its
+      # process started, which is what CI's `docker compose ... --wait`
+      # step (and any orchestrator's restart decisions) need this to mean.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - edge
 
 volumes:
   postgres_data:
@@ -267,3 +439,23 @@ volumes:
     name: repomind_redis_data
   qdrant_data:
     name: repomind_qdrant_data
+  caddy_data:
+    name: repomind_caddy_data
+  caddy_config:
+    name: repomind_caddy_config
+
+networks:
+  # The public-facing path: Caddy (the only thing with a host port) plus
+  # everything it proxies to. `api` is deliberately also on `internal`
+  # below - see this file's top-of-file comment for why.
+  edge:
+    name: repomind_edge
+    ipam:
+      config:
+        - subnet: 172.28.5.0/24
+  # The data-plane path: api/celery-worker and the three stores they use.
+  # Postgres/Redis/Qdrant are never on `edge` - nothing there has any
+  # reason to reach them directly (frontend's own API calls all go
+  # through `api`, never straight to a data store).
+  internal:
+    name: repomind_internal
