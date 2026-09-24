@@ -4,6 +4,8 @@
 
 **Autonomous AI Codebase Intelligence Platform**
 
+## What is RepoMind AI?
+
 RepoMind AI is an autonomous AI codebase intelligence platform: it
 ingests a GitHub repository, indexes its source code for semantic
 retrieval, and uses Retrieval-Augmented Generation (RAG) plus a
@@ -12,11 +14,23 @@ debug, analyze, and secure that codebase — grounded in the actual
 source, not guesswork. See [docs/architecture.md](docs/architecture.md)
 for the full system design.
 
+## The Problem
+
+Understanding an unfamiliar codebase is slow: reading through files by
+hand, grepping for context, and re-deriving how pieces fit together
+before you can safely make a change or answer a question about it.
+Generic chatbots don't help much either — without real access to a
+repository's actual code, they either can't answer or start guessing.
+RepoMind AI closes that gap: point it at a public GitHub repository and
+it answers questions, reviews files, diagnoses bugs, and investigates
+multi-step goals — every answer grounded in that repository's actual
+indexed source, with citations back to the files and lines it used.
+
 ## Key Features
 
 Everything below is implemented and covered by the automated test
-suite — see "Testing & Continuous Integration" further down for the
-current test/CI counts.
+suite — see "Testing & Verification" further down for the current
+test/CI counts.
 
 - **RAG-based codebase chat** — ask questions and get answers grounded
   in a repository's actual indexed code, with cited source files
@@ -55,18 +69,12 @@ current test/CI counts.
   snippet twice. See "LLM Providers" below for which provider actually
   answers these calls and its current, honestly-documented limitations.
 
-## Demo / Screenshots
+## Architecture
 
-Not included yet — this README is text-only for now. Screenshots or a
-short screen recording of the dashboard, chat, and agent views would be
-a natural addition here.
+Two different diagrams, for two different questions:
 
-## How a Question Gets Answered (RAG Pipeline)
-
-The conceptual data flow behind chat, search, debug, and the agent's
-`search_code` tool — distinct from "Deployment Architecture" below,
-which shows how these pieces map onto actual containers, not how a
-question is actually answered:
+**How a question gets answered** — the conceptual data flow behind
+chat, search, debug, and the agent's `search_code` tool:
 
 ```
 GitHub Repository
@@ -89,12 +97,64 @@ Developer Answer
 ```
 
 The top half (ingestion through Qdrant) runs once per repository, in
-the background, via a Celery worker (see "Repository Ingestion" in
-[docs/architecture.md](docs/architecture.md) for the full pipeline).
-The bottom half (retrieval through the developer's answer) runs
-per-request, synchronously, inside a FastAPI request handler — nothing
-in it is precomputed or cached beyond what's already in Qdrant/Postgres
-from ingestion.
+the background, via a Celery worker (see "Repository Processing
+Pipeline" in [docs/architecture.md](docs/architecture.md) for the full
+pipeline). The bottom half (retrieval through the developer's answer)
+runs per-request, synchronously, inside a FastAPI request handler —
+nothing in it is precomputed or cached beyond what's already in
+Qdrant/Postgres from ingestion.
+
+**Container / deployment topology** — which process talks to which
+service. This is the *production* topology (Caddy in front); running
+locally without Docker is simpler — see "How to Run Locally" below,
+which is the primary, actually-used-day-to-day way this project is
+developed and demoed.
+
+```
+Internet
+   │
+   │  80 / 443 only — the single public entry point
+   ▼
+ Caddy                reverse proxy, automatic HTTPS (real domain) or
+   │                  plain HTTP (local testing) — see "Optional:
+   │                  Production Deployment" below
+   ├──────────────┬─────────────┐
+   ▼              ▼             │
+Frontend        FastAPI         │ (server-side calls from the frontend
+(Next.js,       (backend,       │  to the backend also go over this
+ :3000)          :8000)         │  same internal network, not through
+                   │             ▼  Caddy — see "Deployment
+   ┌───────────────┼──────────────  Architecture" below)
+   ▼               ▼              ▼
+PostgreSQL       Redis          Qdrant
+(users,          (Celery        (code-chunk vectors)
+ repos, files,    broker +
+ chunks,          rate-limit
+ conversations)   counters)
+   │               │
+   │               ▼
+   │          Celery worker
+   │               │
+   └───────────────┴──► background ingestion (clone → scan → chunk → embed)
+```
+
+Every service except Caddy is reachable only over the Docker-internal
+network — never directly from the host or the public internet. This
+container topology, including Caddy, is present in the repository and
+CI-verified (see "Optional: Production Deployment" below), but **is not
+required to run or demo RepoMind AI locally** — local development never
+needs Caddy, TLS, or any of this network isolation at all.
+
+Embeddings (turning code/chat text into vectors) happen in two places
+that share one interface (`app/services/embedding_providers.py`):
+repository ingestion (Celery worker, writing to Qdrant) and every
+search/chat/debug request (FastAPI, embedding the query to search
+Qdrant) — see "Embedding Providers" below for the OpenAI vs. local
+choice. LLM calls (Groq or Anthropic, selected by `LLM_PROVIDER` — see
+"LLM Providers" below — via LangGraph's native tool calling for the
+multi-step agent) happen only in FastAPI request handlers that need
+one: chat, explain, review, architecture, security-scan, and the
+agent — never during ingestion itself.
 
 ## Tech Stack
 
@@ -106,45 +166,7 @@ from ingestion.
 | Vector DB | Qdrant |
 | AI / RAG | Groq or Anthropic Claude (chat, explain/review/debug/architecture, agent reasoning — one provider active at a time via `LLM_PROVIDER`, see "LLM Providers" below); OpenAI embeddings (default) or local fastembed/`all-MiniLM-L6-v2` (optional — one embedding provider active at a time, never both simultaneously); LangGraph (multi-step agent orchestration, native tool calling) |
 | Background jobs | Redis + Celery |
-| Infra | Docker, Docker Compose |
-
-## Deployment Architecture
-
-The runtime/container topology — which process talks to which service.
-For the conceptual "how does a question get answered" data flow, see
-"How a Question Gets Answered (RAG Pipeline)" above instead.
-
-```
-  Browser
-     │
-     ▼
-  Next.js (frontend)         all API calls are server-side —
-     │                       the browser never calls FastAPI directly
-     ▼
-  FastAPI (backend)
-     ├──► PostgreSQL     users, repositories, files, chunks, conversations
-     ├──► Qdrant         code-chunk vectors (embeddings)
-     ├──► Redis          Celery broker + rate-limit counters
-     └──► Celery worker
-              │
-              ▼
-        background ingestion (clone → scan → chunk → embed)
-```
-
-Embeddings (turning code/chat text into vectors) happen in two places
-that share one interface (`app/services/embedding_providers.py`):
-repository ingestion (Celery worker, writing to Qdrant) and every
-search/chat/debug request (FastAPI, embedding the query to search
-Qdrant) — see "Embedding Providers" below for the OpenAI vs. local
-choice. LLM calls (Groq or Anthropic, selected by `LLM_PROVIDER` — see
-"LLM Providers" below — via LangGraph's native tool calling for the
-multi-step agent) happen only in FastAPI request handlers that need
-one: chat, explain, review, architecture, security-scan, and the
-agent — never
-during ingestion itself. See [docs/architecture.md](docs/architecture.md)
-for the full system design, including the data model and RAG pipeline
-in more detail, and "Production Deployment → Architecture" below for
-how this maps onto the actual Docker containers/ports.
+| Infra | Docker, Docker Compose; Caddy (reverse proxy / automatic TLS — optional, production deployment only, see below) |
 
 ## Project Structure
 
@@ -153,17 +175,10 @@ repomind-ai/
 ├── frontend/     # Next.js app
 ├── backend/      # FastAPI app
 ├── docs/         # Architecture & design docs
-├── docker/       # Docker Compose & service configs
+├── docker/       # Docker Compose, Dockerfiles, Caddy config
 ├── .env.example  # Full environment variable contract
 └── README.md
 ```
-
-## Development Status
-
-RepoMind AI was built incrementally, one milestone at a time, over 60
-days of iterative development — see [docs/architecture.md](docs/architecture.md)
-for the system design and its own day-by-day log. See "Project Status"
-near the end of this README for the current, CI-verified state.
 
 ## Prerequisites
 
@@ -180,63 +195,13 @@ minimums:
 | PostgreSQL | 17 (`postgres:17-alpine` in Docker/CI) | Always |
 | Redis | 7 (`redis:7-alpine` in Docker/CI) | Always (Celery broker + rate limiting) |
 | Qdrant | latest (`qdrant/qdrant:latest` — not version-pinned upstream) | Always (vector search) |
-| Docker Engine + Compose v2 | any recent version supporting `docker compose` (not the standalone v1 `docker-compose` binary) | Only if using Docker for infra or the full stack — see "Local infrastructure" and "Docker Compose deployment" below |
+| Docker Engine + Compose v2 | any recent version supporting `docker compose` (not the standalone v1 `docker-compose` binary) | Only if using Docker for infra or the full stack — see "Local infrastructure" below and "Optional: Production Deployment" |
 
 Postgres/Redis/Qdrant can each be run natively/via WSL instead of
 Docker — see "Local infrastructure" below; Docker is never a hard
 requirement of the application itself.
 
-## Getting Started
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-cp .env.local.example .env.local
-npm run dev
-```
-
-Visit `http://localhost:3000`. Requires the backend running (see
-below) at the URL in `NEXT_PUBLIC_API_BASE_URL`. Register an account
-at `/register`, then `/login` — `/dashboard` is real from here on:
-it lists your repositories from the live API, lets you add one by
-GitHub URL, and shows its ingestion status as it moves through
-`pending → cloning → processing → completed`. Click a repository to
-see its full detail page (`/dashboard/[id]`) — status, any failure
-message, and every scanned file — with buttons to reindex or delete.
-Once a repository is `completed`, its **Chat** button opens
-`/dashboard/[id]/chat`, where "New chat" starts a conversation
-(`/dashboard/[id]/chat/[conversationId]`) — ask a question and it's
-answered grounded in that repository's indexed code, with the source
-files shown under each reply. Its **Search** button opens
-`/dashboard/[id]/search` for semantic code search without an LLM
-round-trip — type a query and get back the closest matching code
-chunks directly, ranked by similarity; the query lives in the URL
-(`?q=...`), so results are a plain, shareable, bookmarkable link.
-
-#### End-to-end tests
-
-```bash
-cd frontend
-npx playwright install chromium   # first time only
-npm run test:e2e
-```
-
-Drives a real Chromium browser through register/login/logout and the
-full add-repository → wait for ingestion → view files → reindex →
-delete flow. Starts the Next.js dev server itself and starts/reuses
-the FastAPI backend automatically (needs a local Postgres reachable
-via the backend's `DATABASE_URL`, same as running the backend
-manually), and deletes the `e2e_`-prefixed test users it creates from
-the dev database when the run finishes. A real `GITHUB_TOKEN` in
-`.env` is strongly recommended before running this suite repeatedly —
-each run adds a real repository via the live GitHub API, and the
-unauthenticated 60 req/hour limit exhausts fast. Since ingestion now
-also embeds every chunk (Day 15), the suite passes whether or not a
-real `OPENAI_API_KEY` is configured: it waits for either terminal
-status and asserts accordingly (`README` visible on `completed`, the
-real error text on `failed`).
+## How to Run Locally
 
 ### Local infrastructure (PostgreSQL, Redis, Qdrant)
 
@@ -312,8 +277,8 @@ the embedding step and the repository is marked `failed` with that
 error message. Chatting in a conversation additionally requires an
 `ANTHROPIC_API_KEY` — without one, sending a message returns `503`.
 
-Since Day 34, ingestion runs as a Celery task (`app/tasks.py`) instead
-of a FastAPI `BackgroundTasks` job, so `POST /repositories` and
+Ingestion runs as a Celery task (`app/tasks.py`) rather than a FastAPI
+`BackgroundTasks` job, so `POST /repositories` and
 `POST /repositories/{id}/reindex` need a Redis instance reachable at
 `REDIS_URL` (default `redis://localhost:6379/0` — see "Local
 infrastructure" above) and a worker process running:
@@ -326,7 +291,7 @@ celery -A app.core.celery_app worker --loglevel=info --pool=solo
 "prefork" pool needs `os.fork()`, which Windows doesn't have. Without a
 running worker, `.delay()` calls still succeed (they just publish to
 Redis), but queued repositories stay `pending` forever until one
-starts — and since Day 38, if Redis itself isn't reachable at all,
+starts — and if Redis itself isn't reachable at all,
 `POST /repositories`/`.../reindex` fail fast into a `failed` status
 with a clear message instead of hanging the request.
 
@@ -404,15 +369,41 @@ without calling the LLM. `GET /conversations/{id}/messages` replays
 the full thread with each past assistant reply's sources resolved the
 same way.
 
+### Frontend
+
+```bash
+cd frontend
+npm install
+cp .env.local.example .env.local
+npm run dev
+```
+
+Visit `http://localhost:3000`. Requires the backend running (see
+above) at the URL in `NEXT_PUBLIC_API_BASE_URL`. Register an account
+at `/register`, then `/login` — `/dashboard` is real from here on:
+it lists your repositories from the live API, lets you add one by
+GitHub URL, and shows its ingestion status as it moves through
+`pending → cloning → processing → completed`. Click a repository to
+see its full detail page (`/dashboard/[id]`) — status, any failure
+message, and every scanned file — with buttons to reindex or delete.
+Once a repository is `completed`, its **Chat** button opens
+`/dashboard/[id]/chat`, where "New chat" starts a conversation
+(`/dashboard/[id]/chat/[conversationId]`) — ask a question and it's
+answered grounded in that repository's indexed code, with the source
+files shown under each reply. Its **Search** button opens
+`/dashboard/[id]/search` for semantic code search without an LLM
+round-trip — type a query and get back the closest matching code
+chunks directly, ranked by similarity; the query lives in the URL
+(`?q=...`), so results are a plain, shareable, bookmarkable link.
+
 ### Rate limiting
 
-Since Day 46, resource-intensive endpoints are rate limited per
-authenticated user via a Redis-backed fixed-window counter (reuses
-`REDIS_URL`; if Redis itself is unreachable, requests are allowed
-through rather than the app failing closed). Exceeding a limit returns
-`429` with a `detail` message naming the limit and window. All limits
-are configurable via `.env` (see `.env.example`'s "Rate limiting"
-section) — defaults:
+Resource-intensive endpoints are rate limited per authenticated user
+via a Redis-backed fixed-window counter (reuses `REDIS_URL`; if Redis
+itself is unreachable, requests are allowed through rather than the
+app failing closed). Exceeding a limit returns `429` with a `detail`
+message naming the limit and window. All limits are configurable via
+`.env` (see `.env.example`'s "Rate limiting" section) — defaults:
 
 | Scope | Endpoints | Default |
 |---|---|---|
@@ -430,13 +421,13 @@ and confirm the `429` after the configured count.
 
 ### Embedding Providers
 
-Since Day 51, which model turns code into vectors for semantic search is
+Which model turns code into vectors for semantic search is
 configurable (`EMBEDDING_PROVIDER` in `.env`), behind one small interface
 (`app/services/embedding_providers.py`: `embed_texts`/`embed_query`) that
 every caller — ingestion, search, debug, chat, the agent's tools — goes
 through instead of a specific provider directly.
 
-**`EMBEDDING_PROVIDER=openai`** (the default, unchanged since Day 14):
+**`EMBEDDING_PROVIDER=openai`** (the default):
 - Requires `OPENAI_API_KEY`; requests return a clean `503` if it's unset
   (never a crash) — see `.env.example`.
 - Uses `EMBEDDING_MODEL` (default `text-embedding-3-small`, 1536
@@ -450,9 +441,9 @@ through instead of a specific provider directly.
   no PyTorch, chosen specifically to keep the dependency footprint small
   (versus the full `sentence-transformers` + PyTorch stack, which would
   add several times as much).
-- **Not installed by default** (Day 51's review): `fastembed` and its
-  own dependencies (onnxruntime/onnx/numpy/tokenizers/huggingface_hub,
-  roughly 150MB) live in a separate
+- **Not installed by default**: `fastembed` and its own dependencies
+  (onnxruntime/onnx/numpy/tokenizers/huggingface_hub, roughly 150MB)
+  live in a separate
   [`backend/requirements-local-embedding.txt`](backend/requirements-local-embedding.txt),
   not `backend/requirements.txt` — so the default, `EMBEDDING_PROVIDER=openai`
   install/image never pays for them. To actually use `local`:
@@ -526,8 +517,7 @@ already established for embeddings.
   service is temporarily rate-limited...") instead of the raw upstream
   error — see `app/services/llm.py`'s `LLMRateLimitError`.
 
-**`LLM_PROVIDER=anthropic`** (the original, unchanged-since-Day-17
-implementation):
+**`LLM_PROVIDER=anthropic`** (the original implementation):
 - Uses Anthropic's Messages API, including its own native tool-calling
   format (`tools` with `input_schema`, `tool_use`/`tool_result` content
   blocks) for the agent's planner. Requires `ANTHROPIC_API_KEY`; model is
@@ -582,7 +572,9 @@ Both providers share the same Agent safeguards (`app/services/agent.py`):
   each planning turn costs — see "Known Limitations" below for why this
   doesn't fully eliminate Groq's account-level rate limiting.
 
-### Running tests
+## Testing & Verification
+
+### Running the backend test suite
 
 ```bash
 cd backend
@@ -597,10 +589,33 @@ freshly recreated schema. GitHub API calls and background ingestion
 are stubbed out, so the suite needs no network access and never
 touches your dev database.
 
-## Testing & Continuous Integration
+### Running the end-to-end (Playwright) suite
 
-Every layer below runs locally with the commands already documented in
-"Running tests" and "End-to-end tests" above; this section covers what
+```bash
+cd frontend
+npx playwright install chromium   # first time only
+npm run test:e2e
+```
+
+Drives a real Chromium browser through register/login/logout and the
+full add-repository → wait for ingestion → view files → reindex →
+delete flow. Starts the Next.js dev server itself and starts/reuses
+the FastAPI backend automatically (needs a local Postgres reachable
+via the backend's `DATABASE_URL`, same as running the backend
+manually), and deletes the `e2e_`-prefixed test users it creates from
+the dev database when the run finishes. A real `GITHUB_TOKEN` in
+`.env` is strongly recommended before running this suite repeatedly —
+each run adds a real repository via the live GitHub API, and the
+unauthenticated 60 req/hour limit exhausts fast. Since ingestion also
+embeds every chunk, the suite passes whether or not a real
+`OPENAI_API_KEY` is configured: it waits for either terminal status and
+asserts accordingly (`README` visible on `completed`, the real error
+text on `failed`).
+
+### What CI additionally validates
+
+Every layer above runs locally with the commands already documented;
+this section covers what
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) additionally
 validates on every push/PR to `main`, so nothing here duplicates those
 setup steps.
@@ -611,7 +626,7 @@ setup steps.
 | `frontend` (Frontend typecheck & lint) | `next typegen`, `tsc --noEmit`, `eslint .` | — |
 | `e2e` (End-to-end tests) | The full Playwright suite against real Postgres, Redis, and Qdrant service containers plus a real Celery worker, all on the runner. `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` are deliberately left unset — the suite asserts the graceful inline error both produce when missing — so it needs no paid API access to pass. `GITHUB_TOKEN` is the workflow's own automatic token, raising the unauthenticated GitHub API rate limit; no repo secret is configured. | `backend`, `frontend` |
 | `docker` (Docker build validation) | Builds the real `backend/Dockerfile` (both the `production` and `with-local-embedding` targets) and `frontend/Dockerfile` images with `docker/build-push-action`, and validates `docker compose -f docker/docker-compose.yml --profile full config`. Images are never pushed anywhere. | — |
-| `docker-smoke` (Docker Compose full-stack smoke test) | Starts the real `--profile full` stack (`docker compose ... up -d --build --wait --wait-timeout 180`), runs [`scripts/smoke_check.py`](scripts/smoke_check.py) against it (frontend + `/health` + `/health/ready`), then drives a real Chromium browser through a small production-like flow — register, add a repository, view its detail page, log out, confirm the protected dashboard redirects — against the actual containerized frontend/API/Postgres/Redis. Always tears the stack down (`down -v`), win or lose, and captures `docker compose ps`/`logs` and a Playwright HTML report on failure. | `docker` |
+| `docker-smoke` (Docker Compose full-stack smoke test) | Starts the real `--profile full` stack (Postgres, Redis, Qdrant, api, celery-worker, frontend, **and Caddy** — `docker compose ... up -d --build --wait --wait-timeout 180`), runs [`scripts/smoke_check.py`](scripts/smoke_check.py) through Caddy (frontend + `/health` + `/health/ready` via Caddy's `/api/*` route), then drives a real Chromium browser through a small production-like flow — register, add a repository, view its detail page, log out, confirm the protected dashboard redirects — against the actual containerized stack, reached only through Caddy on port 80, exactly as a real deployment's only public entry point would be. Always tears the stack down (`down -v`), win or lose, and captures `docker compose ps`/`logs` and a Playwright HTML report on failure. | `docker` |
 
 `e2e` depends on `backend`/`frontend` and `docker-smoke` depends on
 `docker`, so an obviously broken push fails fast without also paying
@@ -620,94 +635,148 @@ plus a container startup, for something that was never going to pass.
 On failure, `e2e` and `docker-smoke` each upload their own Playwright
 HTML report as a build artifact.
 
-**Verification snapshot — commit `893fc1d` (a point-in-time count, not
-re-verified on every future commit; it will grow if the project is
-developed further):**
+### Verification snapshot
 
-- 324 backend `pytest` tests (`backend/tests/`), locally verified
-  passing in this environment.
-- 19 Playwright end-to-end tests across 5 spec files
-  (`frontend/tests-e2e/`) — `file-scoped-ai-features.spec.ts` fully
-  passes locally; `rag-gated-features.spec.ts` has 3 tests that only
-  fail locally when `EMBEDDING_PROVIDER=local` is intentionally
-  configured (see that file's own comment, and "Known Limitations"
-  below) — CI itself is unaffected, since its workflow never sets
-  `EMBEDDING_PROVIDER`.
-- **CI job status for this exact commit was not independently
-  re-verified from this environment** (no `gh` CLI access here) — check
-  the CI badge at the top of this README for the authoritative, current
-  state. An earlier commit on this line of work (`be15654`) was
-  previously confirmed green across all 5 jobs via GitHub's own UI.
+**As of commit `92699bf`** ("feat: harden production compose and CI
+smoke test"), verified directly in this environment (not recalled from
+memory — see the commit history for what each recent commit changed):
+
+- **389 backend `pytest` tests** (`backend/tests/`): **387 passing, 1
+  skipped** (a real-Redis integration test that only runs on Linux/WSL,
+  independently verified passing there), **1 failing** — and only
+  because this particular local checkout's own `.env` sets
+  `EMBEDDING_PROVIDER=local`; the test asserts OpenAI is the *default*
+  provider, which is a property of an unconfigured environment, not of
+  this one. This is a local-environment choice, not a code defect — CI
+  itself is unaffected, since its workflow never sets
+  `EMBEDDING_PROVIDER` at all.
+- Frontend `npx tsc --noEmit`, `npx eslint .`, and `npm run build`
+  (production build, including static analysis of every route) all pass
+  cleanly.
+- **19 Playwright end-to-end tests** across 5 spec files
+  (`frontend/tests-e2e/`) — all pass. (`rag-gated-features.spec.ts` has
+  3 tests that only fail locally if `EMBEDDING_PROVIDER=local` is
+  intentionally configured — same reasoning as the backend test above,
+  and see that spec file's own comment; CI itself is unaffected.)
+- **CI for commit `92699bf` was independently checked via GitHub's own
+  API and is green across all 5 jobs**: Backend tests, Frontend
+  typecheck & lint, Docker build validation, Docker Compose full-stack
+  smoke test, and End-to-end tests — including the `docker-smoke` job
+  actually building and running the real Caddy container for the first
+  time. The CI badge at the top of this README is the authoritative,
+  always-current source going forward; this snapshot will age as
+  development continues — check the badge, not this paragraph, for the
+  current state of `main`.
 
 These are two genuinely different test suites, not one count split two
 ways — the backend tests never touch a browser, and the E2E tests never
 run against the backend's mocked external services.
 
-## Production Deployment
+RepoMind AI is **feature-complete**: every feature under "Key Features"
+above — RAG chat, semantic search, AI debugging/review/explain,
+architecture analysis, security scanning, and the LangGraph agent with
+native tool calling — is implemented and covered by the automated test
+suite. What follows in "Known Limitations" below is a dated snapshot,
+not a claim that nothing will ever change again, and not a claim that
+every listed capability is guaranteed to behave identically on every
+run.
 
-Since Day 47, there's a complete (if generic — no specific cloud target
-is assumed) production deployment path: two Dockerfiles, a Celery
-worker that reuses the backend's image, and an extended
-`docker/docker-compose.yml`. Nothing here changes local development at
-all — see "Local infrastructure" above, which is still the primary,
-actually-used-day-to-day path on this project's own 8 GB RAM dev
-machine. Day 50 re-audited all of it (still no cloud target, still no
-Docker Desktop required to validate any of this) and found the
-existing design already sound; what follows folds in that audit's
-fixes and additions — a corrected migration-safety comment, a fuller
-environment-variable reference, documented (not newly invented)
-operational defaults, and a small smoke-check script.
+## Demo / Screenshots
+
+Not included yet — this README is text-only for now. Screenshots or a
+short screen recording of the dashboard, chat, and agent views would be
+a natural addition here.
+
+## Optional: Production Deployment
+
+**Cloud deployment is entirely optional and is not required to run,
+develop against, or demonstrate RepoMind AI.** "How to Run Locally"
+above is the complete, actually-used path for local development and
+demos. Everything in this section is a deployment *path* — Dockerfiles,
+a Caddy reverse proxy, a hardened Compose profile, an environment-
+variable contract, healthchecks — kept in this repository because it
+demonstrates real deployment/production-hardening engineering, and
+verified in CI's own disposable runner (including a real Caddy
+container, since the `docker-smoke` job above builds and runs it). It
+does **not** mean this application is currently deployed anywhere
+publicly reachable — see "Known Limitations" below for exactly what
+would still be needed before a real internet-facing deployment (a real
+domain/DNS, real production secrets, and ARM64 image verification on
+the actual target hardware, none of which have been done).
 
 ### Architecture
 
 ```
-                    ┌─────────────┐
-  browser  ───────► │  frontend   │  Next.js standalone, port 3000
-                    └──────┬──────┘
-                           │ NEXT_PUBLIC_API_BASE_URL
-                           ▼
-                    ┌─────────────┐
-  reverse   ──────► │     api     │  FastAPI + uvicorn, port 8000
-  proxy              └──────┬──────┘
-  (your own,                │
-   not included)     ┌──────┴───────┬─────────────┐
-                      ▼              ▼             ▼
-                 ┌─────────┐   ┌─────────┐   ┌──────────┐
-                 │postgres │   │  redis  │   │  qdrant  │
-                 └─────────┘   └────┬────┘   └──────────┘
-                                    │
-                              ┌─────┴──────┐
-                              │celery-worker│  same image as api,
-                              └────────────┘  different command
+Internet
+   │
+   │  80 / 443 only — the single public entry point
+   ▼
+┌───────────────────────────────────┐
+│               Caddy                │  reverse proxy, automatic HTTPS
+└─────────────────┬─────────────────┘  for a real domain (Let's
+                   │                    Encrypt/ACME) or plain HTTP for
+        ┌──────────┴──────────┐        local testing — see docker/Caddyfile
+        ▼                     ▼
+  ┌───────────┐         ┌───────────┐
+  │ frontend  │◄───────►│    api    │  FastAPI + uvicorn, port 8000
+  │ Next.js,  │  server-│           │  (also reachable directly by
+  │ port 3000 │  side   └─────┬─────┘   `frontend`, over the same
+  └───────────┘  calls        │         internal network — not
+                               │         through Caddy; see below)
+                  ┌────────────┼───────────────┐
+                  ▼            ▼               ▼
+             ┌─────────┐ ┌──────────┐   ┌──────────┐
+             │postgres │ │  redis   │   │  qdrant  │
+             └─────────┘ └────┬─────┘   └──────────┘
+                               │
+                         ┌─────┴──────┐
+                         │celery-worker│  same image as api,
+                         └────────────┘  different command
 ```
 
-`frontend` and `api` are deployed separately and talk over HTTP; all of
-that traffic is server-side (`frontend`'s own Next.js server calling
-`api`, not the end user's browser calling it directly), so what matters
-is `frontend`'s build getting baked with a URL that's actually reachable
-*from inside the frontend container*, not from a developer's host
-machine or browser — `docker/docker-compose.yml`'s `full` profile
-handles this with its own `COMPOSE_FRONTEND_API_BASE_URL` variable
-(defaulting to the Compose-internal `http://api:8000`) precisely so it
-doesn't collide with `NEXT_PUBLIC_API_BASE_URL`, which stays whatever
-native/WSL development needs instead — see "Frontend deployment" below
-for why conflating the two was a real bug. No reverse proxy is
-included — TLS termination, domain routing, etc. are deployment-specific
-and deliberately out of scope here, but `api`'s uvicorn is already
-configured to trust `X-Forwarded-*` headers from one (see below).
+Only Caddy publishes a host port (`80`/`443`). Postgres, Redis, Qdrant,
+`api`, and `frontend` publish nothing to the host at all — each is
+reachable only by service name over one of two Docker-internal
+networks (`edge`: Caddy + frontend + api; `internal`: api +
+celery-worker + the three data stores), never directly from the host or
+the public internet. `frontend` and `api` are still deployed as
+separate containers and talk over HTTP; all of that traffic is
+server-side (`frontend`'s own Next.js server calling `api`, not the end
+user's browser calling it directly — see the "Architecture" section
+near the top of this README for why the browser never needs to know
+`api`'s address at all), so what matters is `frontend`'s build getting
+baked with a URL that's actually reachable *from inside the frontend
+container*, not from a developer's host machine or browser —
+`docker/docker-compose.yml`'s `full` profile handles this with its own
+`COMPOSE_FRONTEND_API_BASE_URL` variable (defaulting to the
+Compose-internal `http://api:8000`) precisely so it doesn't collide
+with `NEXT_PUBLIC_API_BASE_URL`, which stays whatever native/WSL
+development needs instead — see "Frontend deployment" below for why
+conflating the two was a real bug.
+
+Caddy itself (`docker/Caddyfile`) routes `https://<PRODUCTION_DOMAIN>/`
+to `frontend:3000` and `https://<PRODUCTION_DOMAIN>/api/*` to
+`api:8000` (stripping the `/api` prefix first — none of FastAPI's real
+routes start with `/api`, so this doesn't collide with anything). The
+`/api/*` route exists for direct API reachability (manual testing, the
+OpenAPI docs) — the frontend itself never uses it, since its own calls
+to `api` happen server-side over the internal network, not through
+Caddy. TLS is automatic: a real public domain (`PRODUCTION_DOMAIN` in
+`.env`) gets a real Let's Encrypt certificate; Caddy is never configured
+with a self-signed certificate or a hardcoded domain.
 
 ### Required environment variables
 
-Every variable is documented with its default and which day introduced
-it in [`.env.example`](.env.example) — this is the **one** canonical
-copy (`cp .env.example .env` from the repo root, or the equivalent step
-in "Getting Started" above); nothing else in this repo defines or
-duplicates this contract. **Never commit the real `.env`** — `.gitignore`
-already excludes it, `.env.example` itself contains only placeholders
-(`changeme`, blank), and this is checked by
+Every variable is documented with its default in
+[`.env.example`](.env.example) — this is the **one** canonical copy
+(`cp .env.example .env` from the repo root, or the equivalent step in
+"How to Run Locally" above); nothing else in this repo defines or
+duplicates this contract. **Never commit the real `.env`** —
+`.gitignore` already excludes it, `.env.example` itself contains only
+placeholders (`changeme`, blank), and this is checked by
 `tests/test_deployment_config.py`.
 
-At a glance (Day 52):
+At a glance:
 - **Required production secrets** (no usable default; the app refuses to
   start without real values — see below): `JWT_SECRET_KEY`,
   `DATABASE_URL`'s password.
@@ -717,9 +786,13 @@ At a glance (Day 52):
   `ANTHROPIC_API_KEY` (only when `LLM_PROVIDER=anthropic`, the code
   default), `GROQ_API_KEY` (only when `LLM_PROVIDER=groq` — see "LLM
   Providers" above).
+- **Optional, empty by default, unlock hardening features when set**:
+  `REDIS_PASSWORD` (Redis auth), `QDRANT_API_KEY` (Qdrant auth) —
+  neither is required for local development; both preserve today's
+  unauthenticated local Redis/Qdrant exactly as-is when left blank.
 - **Optional**: `GITHUB_TOKEN` (raises a rate limit, nothing breaks
   without it), all `RATE_LIMIT_*` variables, `WEB_CONCURRENCY`/
-  `FORWARDED_ALLOW_IPS`.
+  `FORWARDED_ALLOW_IPS`, `PRODUCTION_DOMAIN` (Caddy only).
 - **Required production service URLs**: `DATABASE_URL`, `REDIS_URL`,
   `QDRANT_HOST`/`QDRANT_PORT`.
 - **Public, not secret**: `NEXT_PUBLIC_API_BASE_URL` and
@@ -727,8 +800,8 @@ At a glance (Day 52):
   `NEXT_PUBLIC_*` variable into the JavaScript actually shipped to the
   browser, so neither one may ever hold a secret (only ever a URL here).
 
-This table (Day 50) is the consolidated production-audit view of the
-same file: **when** each value is read matters as much as what it's for.
+The consolidated production-audit view of the same file — **when** each
+value is read matters as much as what it's for:
 
 | Variable | When read | Required in production |
 |---|---|---|
@@ -736,15 +809,19 @@ same file: **when** each value is read matters as much as what it's for.
 | `JWT_SECRET_KEY` | Runtime | **Yes, real value** — app refuses to start with the placeholder or empty |
 | `DATABASE_URL` | Runtime | **Yes, real value** — app refuses to start with the placeholder `changeme` password |
 | `CORS_ORIGINS` | Runtime | Recommended — logs a warning (not a hard failure) if left at the localhost default |
+| `PRODUCTION_DOMAIN` | Read by `docker/Caddyfile` (Caddy container only, not the app) | Yes, for real HTTPS — a real domain with DNS pointing at the deployment host; a local/non-public value falls back to Caddy's own local-only test HTTPS |
+| `REDIS_PASSWORD` | Compose-time (embedded into `REDIS_URL`) and by the `redis` container itself | Recommended — empty preserves unauthenticated Redis |
+| `QDRANT_API_KEY` | Runtime (sent as the `api-key` header) and by the `qdrant` container itself | Recommended — empty preserves unauthenticated Qdrant |
+| `FORWARDED_ALLOW_IPS` | Runtime, but read by `backend/docker-entrypoint.sh` directly, **not** by the FastAPI app itself | Optional — Compose's own default scopes trust to the internal network Caddy runs on, not `*` |
 | `GITHUB_TOKEN` | Runtime | Optional — raises GitHub's rate limit from 60/hr to 5000/hr |
 | `LLM_PROVIDER` / `ANTHROPIC_MODEL` / `GROQ_MODEL` / `EMBEDDING_MODEL` | Runtime | Optional (defaults are usable) |
 | `OPENAI_API_KEY` | Runtime | Yes, for search/chat/debug/etc. to work at all — endpoints return a clean `503` (not a crash) if unset |
 | `ANTHROPIC_API_KEY` | Runtime | Yes, only when `LLM_PROVIDER=anthropic` — same clean-`503`-if-unset reasoning as `OPENAI_API_KEY` |
 | `GROQ_API_KEY` | Runtime | Yes, only when `LLM_PROVIDER=groq` — same reasoning |
-| `REDIS_URL` | Runtime | Yes — Celery broker and Day 46's rate limiting both need it; rate limiting fails open (not closed) if unreachable |
-| `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_COLLECTION_NAME` | Runtime | Yes — search/chat/debug depend on it; see the Qdrant note below |
+| `REDIS_URL` | Runtime | Yes — Celery broker and rate limiting both need it; rate limiting fails open (not closed) if unreachable |
+| `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_COLLECTION_NAME` | Runtime | Yes — search/chat/debug depend on it |
 | `RATE_LIMIT_*` (ten variables) | Runtime | Optional (defaults are usable); `RATE_LIMIT_ENABLED=false` disables all of them |
-| `WEB_CONCURRENCY` / `FORWARDED_ALLOW_IPS` | Runtime, but read by `backend/docker-entrypoint.sh` directly, **not** by the FastAPI app itself | Optional (defaults are usable) |
+| `WEB_CONCURRENCY` | Runtime, but read by `backend/docker-entrypoint.sh` directly, **not** by the FastAPI app itself | Optional (defaults are usable) |
 | `NEXT_PUBLIC_API_BASE_URL` | **Build-time only** — inlined into the frontend's compiled output; changing it after the image is built has no effect | Native/WSL development only — see "Frontend deployment" below |
 | `COMPOSE_FRONTEND_API_BASE_URL` | **Build-time only**, same mechanism | Docker Compose `full` profile only; leave blank to use the correct default |
 
@@ -755,13 +832,6 @@ generate a real `JWT_SECRET_KEY` with
 `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Every
 other variable above has a default that's fine for local development
 but should be reviewed before a real deployment.
-
-**Qdrant limitation (Day 50):** `app/services/vector_store.py` talks to
-Qdrant over plain HTTP with no API key/auth support at all — fine for a
-self-hosted Qdrant container (as `docker/docker-compose.yml` runs), but
-this codebase does **not** currently support a hosted Qdrant Cloud
-instance that requires an API key. Adding that is real feature work,
-not a config change, and is explicitly out of scope here.
 
 ### Backend deployment
 
@@ -782,18 +852,23 @@ concurrency, so adding gunicorn on top would be an unnecessary
 dependency for what it actually buys here. `--proxy-headers` plus
 `--forwarded-allow-ips` is what "runs behind a reverse proxy" actually
 means in practice: without it, every request would appear to originate
-from the proxy's own IP, which would also silently break Day 46's
-per-IP `auth_register`/`auth_login` rate limiting (everyone behind the
-proxy would share one counter).
+from the proxy's own IP, which would also silently break per-IP
+`auth_register`/`auth_login` rate limiting (everyone behind the proxy
+would share one counter). The `*` default above is this variable's
+**native/WSL development** default (no reverse proxy at all in that
+setup); `docker/docker-compose.yml`'s `full` profile overrides it to the
+`edge` network's own subnet instead, so only Caddy is actually trusted
+to set these headers once the API has no host-published port left —
+see "Architecture" above and `.env.example`'s own comment on this
+variable.
 
-**Migration safety scope (Day 50):** "safe on every deploy" above means
-safe for the single `api` container/replica this Compose file actually
-runs — `alembic upgrade head` records its progress in a plain table,
-not a real distributed lock, so running *multiple* `api` replicas that
-each execute this entrypoint concurrently could race each other. Add a
-real lock (e.g. a Postgres advisory lock in `alembic/env.py`) before
-ever scaling `api` beyond one replica; nothing here claims that safety
-today.
+**Migration safety scope:** "safe on every deploy" above means safe for
+the single `api` container/replica this Compose file actually runs —
+`alembic upgrade head` records its progress in a plain table, not a
+real distributed lock, so running *multiple* `api` replicas that each
+execute this entrypoint concurrently could race each other. Add a real
+lock (e.g. a Postgres advisory lock in `alembic/env.py`) before ever
+scaling `api` beyond one replica; nothing here claims that safety today.
 
 ### Frontend deployment
 
@@ -818,25 +893,27 @@ docker build --build-arg NEXT_PUBLIC_API_BASE_URL=https://api.example.com \
   -t repomind-frontend frontend/
 ```
 
-A second, sharper version of that same gotcha (Day 47's review):
-building this image as part of `docker/docker-compose.yml`'s `full`
-profile must **not** reuse `.env`'s `NEXT_PUBLIC_API_BASE_URL` directly
-— that variable is correct for native/WSL development (frontend and
-backend as separate processes on the same host, where `localhost:8000`
-really does reach the backend), but every API call this app makes
-happens server-side, inside whichever process is running the frontend.
-Built with `localhost:8000` baked in and run as its own Compose
-container, the frontend would try to reach `localhost:8000` *from
-inside itself* — nothing listens there, since `api` is a separate
-container — and every Server Component and Server Action would fail
-silently. `docker-compose.yml` avoids this with its own
-`COMPOSE_FRONTEND_API_BASE_URL` variable instead, defaulting to the
-Compose-internal `http://api:8000` so this works correctly with zero
-configuration; see `.env.example`'s comment on that variable, and the
-`frontend` service's own `build.args` comment, for the full reasoning.
+A second, sharper version of that same gotcha: building this image as
+part of `docker/docker-compose.yml`'s `full` profile must **not** reuse
+`.env`'s `NEXT_PUBLIC_API_BASE_URL` directly — that variable is correct
+for native/WSL development (frontend and backend as separate processes
+on the same host, where `localhost:8000` really does reach the
+backend), but every API call this app makes happens server-side, inside
+whichever process is running the frontend. Built with `localhost:8000`
+baked in and run as its own Compose container, the frontend would try
+to reach `localhost:8000` *from inside itself* — nothing listens there,
+since `api` is a separate container — and every Server Component and
+Server Action would fail silently. `docker-compose.yml` avoids this
+with its own `COMPOSE_FRONTEND_API_BASE_URL` variable instead,
+defaulting to the Compose-internal `http://api:8000` so this works
+correctly with zero configuration — and stays that value even behind
+Caddy, since the browser itself never sees or needs this URL at all
+(see "Architecture" above); see `.env.example`'s comment on that
+variable, and the `frontend` service's own `build.args` comment, for
+the full reasoning.
 
-Verified locally without Docker (see "Running tests" above): a real
-`npm run build` succeeds and produces `.next/standalone/server.js`,
+Verified locally without Docker (see "Testing & Verification" above): a
+real `npm run build` succeeds and produces `.next/standalone/server.js`,
 exercising the exact build step the Dockerfile's builder stage runs.
 
 ### Celery worker deployment
@@ -847,26 +924,27 @@ overrides its `ENTRYPOINT` (which is api-specific: migrations + uvicorn)
 to empty, and runs:
 
 ```bash
-celery -A app.core.celery_app worker --loglevel=info
+celery -A app.core.celery_app worker --loglevel=info --concurrency=1
 ```
 
-No `--pool=solo` — that's Day 34's Windows-only workaround for the lack
-of `os.fork()`; Linux's default `prefork` pool works as-is inside a
-container (same reasoning Day 44's CI already established for the
-worker it starts there). Uses the exact same Redis broker config
-(`REDIS_URL`) and sees the exact same rate-limiting settings as `api`
-(Day 46's config is a Redis-backed check inside request handling, not
-something the worker itself needs to know about — it just needs the
-same `REDIS_URL` to reach the same Redis).
+No `--pool=solo` — that's the Windows-only workaround for the lack of
+`os.fork()`; Linux's default `prefork` pool works as-is inside a
+container. Uses the exact same Redis broker config (`REDIS_URL`) and
+sees the exact same rate-limiting settings as `api` (rate limiting is a
+Redis-backed check inside request handling, not something the worker
+itself needs to know about — it just needs the same `REDIS_URL` to
+reach the same Redis).
 
-**Concurrency (Day 50):** no `--concurrency=N` flag is set, so Celery
-uses its own default (one process per CPU core, prefork pool). That's
-a reasonable starting point, not a value this project has load-tested —
-if `ingest_repository` throughput ever actually becomes a bottleneck,
-override it directly in `docker/docker-compose.yml`'s `celery-worker`
-`command:` (e.g. `["celery", "-A", "app.core.celery_app", "worker",
-"--loglevel=info", "--concurrency=4"]`) rather than guessing a number
-here ahead of any evidence it's needed.
+**Concurrency:** explicitly pinned to `--concurrency=1`, not left at
+Celery's own default (one process per CPU core). Ingestion here is a
+background, one-at-a-time-per-repository workload, not a
+high-throughput queue, and an unpinned worker count is unpredictable
+memory usage on a resource-constrained deployment target — each worker
+process can hold a full copy of the app's imports (and, if
+`EMBEDDING_PROVIDER=local`, the ONNX model) in memory. Raise it directly
+in `docker/docker-compose.yml`'s `celery-worker` `command:` if ingestion
+throughput ever actually becomes a measured bottleneck, rather than
+guessing a higher number ahead of any evidence it's needed.
 
 ### PostgreSQL, Redis, and Qdrant
 
@@ -875,11 +953,15 @@ above for what each is used for. In production, run them as managed
 services or long-lived containers with real persistent volumes/backups;
 `docker/docker-compose.yml`'s `postgres`/`redis`/`qdrant` services are
 adequate for a small, single-host deployment but don't include backup
-automation, replication, or TLS between services — add those
-separately for anything beyond that scale.
+automation or replication — add those separately for anything beyond
+that scale. Redis and Qdrant both support optional password/API-key
+authentication (`REDIS_PASSWORD`/`QDRANT_API_KEY` — see "Required
+environment variables" above); neither is required, but both are
+recommended once the stack is reachable by anything beyond a single
+trusted developer.
 
-**Connection pool sizing (Day 50):** `app/core/database.py` creates its
-async engine with no explicit `pool_size`/`max_overflow`, so it uses
+**Connection pool sizing:** `app/core/database.py` creates its async
+engine with no explicit `pool_size`/`max_overflow`, so it uses
 SQLAlchemy's defaults (5 + 10 = 15 connections, per process). Each of
 `api`'s `WEB_CONCURRENCY` uvicorn worker *processes* gets its own pool
 (they don't share one), plus one more from the Celery worker process —
@@ -890,25 +972,26 @@ size accordingly if `WEB_CONCURRENCY` is raised well beyond 2.
 
 ### Docker Compose deployment
 
-The same file Day 40 introduced for local infra now also represents
-the complete stack, gated behind a Compose profile so the original
-infra-only behavior is completely unchanged by default:
+The same file used for local infra also represents the complete stack,
+gated behind a Compose profile so the original infra-only behavior is
+completely unchanged by default:
 
 ```bash
-# Infra only (unchanged since Day 40):
+# Infra only (unchanged default behavior):
 docker compose -f docker/docker-compose.yml up -d
 
-# The complete stack - postgres, redis, qdrant, api, celery-worker, frontend:
+# The complete stack - postgres, redis, qdrant, api, celery-worker, frontend, caddy:
 docker compose -f docker/docker-compose.yml --env-file .env --profile full up -d
 
-# Same command CI's docker-smoke job actually runs (Day 54) - blocks
-# until every service with a healthcheck reports healthy, or fails
-# after 180s instead of hanging indefinitely:
+# Same command CI's docker-smoke job actually runs - blocks until every
+# service with a healthcheck reports healthy, or fails after 180s
+# instead of hanging indefinitely:
 docker compose -f docker/docker-compose.yml --env-file .env --profile full \
   up -d --build --wait --wait-timeout 180
 
 # Stop and remove the stack (add -v to also delete the named volumes -
-# Postgres/Redis/Qdrant data - and lose all local data):
+# Postgres/Redis/Qdrant/Caddy data - and lose all local data,
+# including issued TLS certificates):
 docker compose -f docker/docker-compose.yml --profile full down
 docker compose -f docker/docker-compose.yml --profile full down -v
 ```
@@ -925,19 +1008,23 @@ secret injection (e.g. a platform's secret manager exporting the same
 variable names) — either way, never hardcoded into `docker-compose.yml`
 itself.
 
-### Verifying a deployment (Day 50)
+### Verifying a deployment
 
 After bringing up the `full` profile (or any other deployment of this
-stack — native/WSL, or a future cloud target), check it actually works
-with:
+stack — native/WSL, or a future cloud target), check it actually works.
+Through Caddy (the real production path — only 80/443 are host-published,
+so this is how a real deployment's own frontend/api are actually
+reached):
 
 ```bash
-# Everything defaults to localhost - matches the full Compose profile's
-# own published ports (frontend :3000, api :8000).
-python scripts/smoke_check.py
+python scripts/smoke_check.py --frontend-url http://localhost --api-url http://localhost/api
+```
 
-# Against a real deployment elsewhere:
-python scripts/smoke_check.py --frontend-url https://app.example.com --api-url https://api.example.com
+Against a native/WSL deployment with no Caddy in front (frontend/api on
+their own default ports, as in "How to Run Locally" above):
+
+```bash
+python scripts/smoke_check.py   # defaults to localhost:3000 / localhost:8000
 ```
 
 [`scripts/smoke_check.py`](scripts/smoke_check.py) is a small,
@@ -949,12 +1036,13 @@ but GET requests, so it's safe to run against a live deployment at any
 time. `backend/tests/test_smoke_check.py` covers its logic directly
 against a local fake server (no live deployment needed for that).
 
-To check each piece manually instead:
+To check each piece of the Docker Compose `full` profile manually
+instead (from inside the Docker network, since `api`/`frontend` have no
+host-published port — see "Architecture" above):
 
 ```bash
-curl -s http://localhost:8000/health          # liveness
-curl -s http://localhost:8000/health/ready    # readiness (503 if Postgres is unreachable)
-curl -sI http://localhost:3000                # frontend responds at all
+docker compose -f docker/docker-compose.yml --profile full exec api \
+  python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/health/ready').status)"
 docker compose -f docker/docker-compose.yml --profile full ps   # every service "healthy"?
 docker compose -f docker/docker-compose.yml --profile full logs celery-worker --tail 50
 ```
@@ -963,27 +1051,28 @@ docker compose -f docker/docker-compose.yml --profile full logs celery-worker --
 
 - `GET /health` — liveness: is the process up at all. No dependency
   checks, no auth needed.
-- `GET /health/ready` — readiness (Day 47): can the process actually
-  serve requests right now. Checks Postgres reachability only (with an
+- `GET /health/ready` — readiness: can the process actually serve
+  requests right now. Checks Postgres reachability only (with an
   explicit timeout, so an unreachable — not just erroring — database
   can't hang the check), deliberately not Redis/Qdrant: both already
-  degrade gracefully when unreachable (Days 38-43 — ingestion fails
-  fast into `status: "failed"`, rate limiting fails open, search/chat
-  map to a clean `502`/`503`), so reporting "not ready" for either would
-  flag a condition that doesn't actually block most requests. Neither
-  endpoint ever includes a connection string, credential, or other
+  degrade gracefully when unreachable (ingestion fails fast into
+  `status: "failed"`, rate limiting fails open, search/chat map to a
+  clean `502`/`503`), so reporting "not ready" for either would flag a
+  condition that doesn't actually block most requests. Neither endpoint
+  ever includes a connection string, credential, or other
   infrastructure detail in its response.
 
-`docker/docker-compose.yml`'s `api`/`celery-worker`/`frontend` services
-all have their own `healthcheck:` blocks, each probing with a tool
-already guaranteed present in that image rather than installing one
-just for this (Python's `urllib` for `api`, Node's `http` module for
-`frontend`, `celery inspect ping` for the worker) — the same "no
-guaranteed shell tools" reasoning Day 40 already established for why
-Qdrant's own service has no healthcheck at all. `api`'s own healthcheck
-probes `/health/ready` specifically (Day 60), not just `/health` — so a
-mid-life database outage is correctly reflected in the container's
-health status, not just whether the process itself is still running.
+`docker/docker-compose.yml`'s `api`/`celery-worker`/`frontend`/`caddy`
+services all have their own `healthcheck:` blocks, each probing with a
+tool already guaranteed present in that image rather than installing
+one just for this (Python's `urllib` for `api`, Node's `http` module
+for `frontend`, `celery inspect ping` for the worker, busybox `wget`
+for Caddy's Alpine base) — the same "no guaranteed shell tools"
+reasoning behind why Qdrant's own service has no healthcheck at all.
+`api`'s own healthcheck probes `/health/ready` specifically, not just
+`/health` — so a mid-life database outage is correctly reflected in the
+container's health status, not just whether the process itself is
+still running.
 
 ### Observability
 
@@ -1050,27 +1139,34 @@ check each before a real deployment:
 - [ ] **`/health`/`/health/ready` never leak infrastructure details** —
       no connection string, credential, or hostname in either response
       (`tests/test_health.py`).
-- [ ] **HTTPS/TLS termination** — **not included** in this repository;
-      `uvicorn` runs plain HTTP and trusts `X-Forwarded-*` from a
-      reverse proxy you provide (nginx, Caddy, Traefik, your cloud
-      provider's load balancer) via `FORWARDED_ALLOW_IPS`. Terminate
-      TLS at that proxy, not here.
-- [ ] Per-user/per-IP rate limiting (Day 46) and fail-fast/graceful
-      degradation for every external dependency (Days 38-43) apply
-      unchanged in production — neither is dev-only behavior.
+- [x] **HTTPS/TLS termination** — Caddy (`docker/docker-compose.yml`'s
+      `caddy` service, `docker/Caddyfile`) terminates TLS automatically
+      for a real `PRODUCTION_DOMAIN`; `uvicorn` runs plain HTTP behind it
+      and trusts `X-Forwarded-*` only from the internal network Caddy
+      runs on (`FORWARDED_ALLOW_IPS`).
+- [x] **Only the reverse proxy is publicly reachable** — Postgres,
+      Redis, Qdrant, `api`, and `frontend` publish no host ports at all;
+      only Caddy (`80`/`443`) does.
+- [ ] **`REDIS_PASSWORD`/`QDRANT_API_KEY` set to real values** —
+      supported and recommended, but empty by default; the app and both
+      containers must agree on the same values (see "Required
+      environment variables" above).
+- [ ] Per-user/per-IP rate limiting and fail-fast/graceful degradation
+      for every external dependency apply unchanged in production —
+      neither is dev-only behavior.
 
 ### Native/WSL fallback for resource-constrained machines
 
 Nothing above requires Docker. Every piece — the backend, the Celery
-worker, the frontend, Postgres, Redis, Qdrant — can run exactly as
-"Getting Started" and "Local infrastructure" already document, just
-with `ENVIRONMENT=production`-appropriate values in `.env` and a real
-reverse proxy (nginx, Caddy, Traefik, your cloud provider's load
-balancer — anything that can set `X-Forwarded-*` headers) in front of
-`uvicorn`/`next start`. This is not a hypothetical: it's the same
-Option B this project's own README has documented since Day 40, for
-the same reason — Docker Desktop's resource overhead is a real cost on
-an 8 GB RAM machine, in production every bit as much as in local dev.
+worker, the frontend, Postgres, Redis, Qdrant — can run exactly as "How
+to Run Locally" already documents, just with
+`ENVIRONMENT=production`-appropriate values in `.env` and a real reverse
+proxy (Caddy, nginx, Traefik, your cloud provider's load balancer —
+anything that can set `X-Forwarded-*` headers) in front of
+`uvicorn`/`next start`. This is not a hypothetical: it's the same option
+this project's own local development actually uses day to day, for the
+same reason — Docker Desktop's resource overhead is a real cost on an
+8 GB RAM machine, in production every bit as much as in local dev.
 
 ## Troubleshooting
 
@@ -1079,15 +1175,15 @@ or has hit, not a generic checklist:
 
 | Symptom | Likely cause / what to check |
 |---|---|
-| `api` container never becomes healthy | Check `docker compose -f docker/docker-compose.yml --profile full logs api`. The most common cause: `ENVIRONMENT=production` with `JWT_SECRET_KEY` or `DATABASE_URL`'s password still at its placeholder — `app/core/config.py`'s startup guard raises during `alembic upgrade head` (the entrypoint's first command), so `uvicorn` never starts and the healthcheck (`GET /health/ready`) has nothing to reach. The `api` container's healthcheck probes `/health/ready`, not just `/health` (Day 60) — it verifies Postgres is actually reachable, not just that the process is alive, so a database outage after startup is also correctly reflected here. See "Required environment variables" above. |
-| Database migration/startup fails | Confirm `DATABASE_URL` is correct and Postgres is actually reachable — `api`/`celery-worker` both `depends_on: postgres: condition: service_healthy`, so a wrong password/host is the usual cause once Postgres itself is up. Run `alembic upgrade head` manually (see "Backend" above) to see the real error outside a container. |
-| Redis unavailable | `POST /repositories`/`.../reindex` fail fast into `status: "failed"` with a clear "background worker is unreachable" message rather than hanging (Day 38). Rate limiting fails **open** (requests allowed through), not closed, if Redis is unreachable — it won't block traffic, but limits stop being enforced. |
-| Qdrant unavailable | No healthcheck on the `qdrant` service by design — its image has no shell tools to probe with. Check manually: `curl http://localhost:6333/collections`. Search/chat/debug map an unreachable Qdrant to a clean `502`/`503`, not a crash. |
-| Ingestion ends in `failed` — OpenAI missing/quota | Expected without a real `OPENAI_API_KEY` (or with one that's exhausted) when `EMBEDDING_PROVIDER=openai` — the repository's `error_message` names it directly. Either set a real key, or switch to `EMBEDDING_PROVIDER=local` (see "Embedding Providers") to avoid needing one at all. |
+| `api` container never becomes healthy | Check `docker compose -f docker/docker-compose.yml --profile full logs api`. The most common cause: `ENVIRONMENT=production` with `JWT_SECRET_KEY` or `DATABASE_URL`'s password still at its placeholder — `app/core/config.py`'s startup guard raises during `alembic upgrade head` (the entrypoint's first command), so `uvicorn` never starts and the healthcheck (`GET /health/ready`) has nothing to reach. The `api` container's healthcheck probes `/health/ready`, not just `/health` — it verifies Postgres is actually reachable, not just that the process is alive, so a database outage after startup is also correctly reflected here. See "Required environment variables" above. |
+| Database migration/startup fails | Confirm `DATABASE_URL` is correct and Postgres is actually reachable — `api`/`celery-worker` both `depends_on: postgres: condition: service_healthy`, so a wrong password/host is the usual cause once Postgres itself is up. Run `alembic upgrade head` manually (see "How to Run Locally" above) to see the real error outside a container. |
+| Redis unavailable | `POST /repositories`/`.../reindex` fail fast into `status: "failed"` with a clear "background worker is unreachable" message rather than hanging. Rate limiting fails **open** (requests allowed through), not closed, if Redis is unreachable — it won't block traffic, but limits stop being enforced. |
+| Qdrant unavailable | No healthcheck on the `qdrant` service by design — its image has no shell tools to probe with. Check from another container on the same Docker network, or `curl http://localhost:6333/collections` in a native/WSL setup where Qdrant is host-reachable. Search/chat/debug map an unreachable Qdrant to a clean `502`/`503`, not a crash. |
+| Ingestion ends in `failed` — OpenAI missing/quota | Expected without a real `OPENAI_API_KEY` (or with one that's exhausted) when `EMBEDDING_PROVIDER=openai` — the repository's `error_message` names it directly. Either set a real key, or switch to `EMBEDDING_PROVIDER=local` (see "Embedding Providers" above) to avoid needing one at all. |
 | Chat/explain/review/etc. return `503` | Whichever key `LLM_PROVIDER` currently selects (`ANTHROPIC_API_KEY` for `anthropic`, `GROQ_API_KEY` for `groq`) is unset or invalid — every LLM-backed endpoint returns a clean `503` rather than crashing when it's missing. |
 | Agent request returns `502` with "temporarily rate-limited" | The configured LLM provider returned an HTTP 429 (Groq's shared account-tier TPM limit is the one observed in practice — see "LLM Providers" above). The API translates this into a clean message rather than the raw provider error; wait a few seconds and retry manually — the app does not auto-retry. |
-| Repository stuck in `pending` forever | No Celery worker is running. `.delay()` calls succeed either way (they just publish to Redis) — start one: `celery -A app.core.celery_app worker --loglevel=info` (add `--pool=solo` on native Windows; see "Backend" above). |
-| Port already in use (3000/8000/5432/6379/6333) | Something else on the host is already bound to it. For Compose, override via `.env` (`BACKEND_PORT`, `POSTGRES_PORT`, `REDIS_PORT`, `QDRANT_PORT`); for native processes, pass the equivalent flag/env var to that tool directly. |
+| Repository stuck in `pending` forever | No Celery worker is running. `.delay()` calls succeed either way (they just publish to Redis) — start one: `celery -A app.core.celery_app worker --loglevel=info` (add `--pool=solo` on native Windows; see "How to Run Locally" above). |
+| Port already in use (3000/8000/5432/6379/6333) | Something else on the host is already bound to it. For Compose, override via `.env` (`BACKEND_PORT`, `POSTGRES_PORT`, `REDIS_PORT`, `QDRANT_PORT`); for native processes, pass the equivalent flag/env var to that tool directly. Only relevant to infra-only Compose mode or native/WSL — the `full` profile no longer publishes these ports at all. |
 | Docker isn't available on this machine | Not a hard requirement — use Option B (native/WSL Postgres/Redis/Qdrant) from "Local infrastructure" above; every other piece of the stack already runs the same way regardless of Docker. |
 | Setting up local embeddings (`EMBEDDING_PROVIDER=local`) | Native/WSL: `pip install -r backend/requirements-local-embedding.txt` instead of `requirements.txt`. Docker: set `BACKEND_DOCKER_TARGET=with-local-embedding` in `.env` before `--build`ing. See "Embedding Providers" above for the full explanation — including that switching providers is not retroactive for already-ingested repositories. |
 
@@ -1111,60 +1207,27 @@ Documented honestly, not glossed over:
   `LLM_PROVIDER=anthropic` in a real deployment should work per the test
   coverage, but that is a claim about test coverage, not about a
   confirmed live run.
-- **This is not a public or production deployment.** Everything in
-  "Production Deployment" below describes a deployment *path* —
-  Dockerfiles, a Compose profile, environment-variable contracts,
-  healthchecks — verified in CI's own disposable runner. It does not
-  mean this application is currently deployed anywhere publicly
-  reachable, or that doing so has been fully audited end-to-end (see
-  the deployment-readiness notes in "Production Deployment" for what
-  specifically would still need attention before a real internet-facing
-  deployment — a reverse proxy/TLS layer in front of the stack, and
-  restricting which container ports are host-published, in particular).
+- **This is not a public or production deployment.** The deployment
+  path described in "Optional: Production Deployment" above — Caddy,
+  TLS, host-port isolation, Redis/Qdrant auth, hardened Compose — is
+  real, implemented, and CI-verified (including a real Caddy container
+  actually starting and routing traffic in CI). It is **not** the same
+  claim as "this is running somewhere publicly reachable right now." A
+  real deployment would still need: a real domain with DNS pointing at
+  the target host, real production secrets, and verification that the
+  Docker images actually build and run on the target architecture —
+  none of that has been done, and this README does not claim otherwise.
 - **Not free forever, and not guaranteed rate-limit-free.** Groq's free
   tier and local fastembed embeddings avoid *some* costs (no OpenAI
   embedding spend, no Anthropic spend while `LLM_PROVIDER=groq`), but
   "avoids some costs today" is not the same claim as "will always be
   free" or "will never be rate-limited" — see the TPM point above.
 
-## Project Status
+## Development History
 
-RepoMind AI is **feature-complete**: every feature under "Key Features"
-above — RAG chat, semantic search, AI debugging/review/explain,
-architecture analysis, security scanning, and the LangGraph agent with
-native tool calling — is implemented and covered by the automated test
-suite. The CI badge at the top of this README always reflects the live
-state of the latest commit on `main`; what follows is a dated snapshot,
-not a claim that nothing will ever change again, and not a claim that
-every listed capability is guaranteed to behave identically on every
-run (see "Known Limitations" immediately above, specifically regarding
-the Agent and Groq).
-
-**As of commit `893fc1d`** (native Groq/Anthropic tool calling, agent
-token-consumption optimization, and graceful upstream-rate-limit
-handling), locally verified in this environment:
-
-- **324 backend `pytest` tests**, all passing.
-- Frontend `npm run lint` and `npm run build` (typecheck included) both
-  pass.
-- The Playwright e2e suite's `file-scoped-ai-features.spec.ts` (explain,
-  review, architecture, security, agent) passes in full locally. Three
-  tests in `rag-gated-features.spec.ts` (chat/search/debug) fail
-  *locally only*, and only when the local backend is intentionally
-  configured with `EMBEDDING_PROVIDER=local` instead of the CI/default
-  `openai` — see that spec file's own comment for the full explanation;
-  this is a documented local-environment difference, not a code defect.
-
-**GitHub Actions CI status for the exact current commit has not been
-independently re-verified from this environment** — the `gh` CLI isn't
-available here, so this README does not claim a fresh, tool-verified CI
-result for every commit going forward. The CI badge at the top of this
-page is the authoritative, always-current source for that; check it
-directly rather than trusting a snapshot here. An earlier commit on this
-same line of work (`be15654`) was confirmed green across all 5 jobs —
-backend tests, frontend typecheck/lint, Docker build validation, e2e,
-and the Docker Compose full-stack smoke test — via GitHub's own UI.
-Day-to-day development and the commands throughout this README are
-verified the native/WSL way instead. Should development continue, this
-snapshot will be extended rather than replaced — check the CI badge for
-the current state of `main`.
+RepoMind AI was built incrementally, one milestone at a time. See
+[docs/architecture.md](docs/architecture.md) for the full system design
+and its own development log. The CI badge at the top of this README
+always reflects the live state of the latest commit on `main`; the
+"Verification snapshot" above is a dated point-in-time count, not a
+claim that nothing will ever change again.
